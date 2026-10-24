@@ -35,7 +35,151 @@ void ofApp::setup() {
         {"Norway", "fps-normalized/norway-native-cadence.mp4", 45.44f}
     };
 
+    loadRenderSpecs();
+
     loadVideo(0);
+}
+
+void ofApp::loadRenderSpecs() {
+    renderSpecs = {
+        {{3, 2.50f, 1000.0f, 60.0f, "invertedGrayscale"}},
+        {{3, 100.0f, -1.0f, 60.0f, "invertedGrayscale"}},
+        {{3, 75.0f, -50.0f, 60.0f, "invertedGrayscale"}},
+        {{15, 100.0f, -50.0f, 60.0f, "invertedGrayscale"}},
+        {{1, 99.0f, -1.0f, 60.0f, "invertedGrayscale"}}
+    };
+    selectedSpecIndices.assign(sources.size(), 0);
+
+    const auto specsPath = appDataPath("render-specs.json");
+    if (!std::filesystem::exists(specsPath)) {
+        return;
+    }
+
+    const ofJson document = ofLoadJson(specsPath);
+    if (!document.is_object() ||
+        !document.contains("videos") || !document["videos"].is_array()) {
+        ofLogError("ofApp") << "Could not read render specs: " << specsPath;
+        return;
+    }
+
+    for (const auto &entry : document["videos"]) {
+        if (!entry.is_object() || !entry.contains("source") ||
+            !entry["source"].is_string()) {
+            continue;
+        }
+        const std::string source = entry["source"].get<std::string>();
+        const auto found = std::find_if(sources.begin(), sources.end(),
+                                        [&](const VideoSource &video) {
+                                            return video.label == source;
+                                        });
+        if (found == sources.end()) {
+            continue;
+        }
+        const auto index = static_cast<std::size_t>(std::distance(sources.begin(), found));
+        auto readSpec = [](const ofJson &sourceSpec, RenderSpec spec) {
+            if (sourceSpec.contains("frameOffset") &&
+                sourceSpec["frameOffset"].is_number_integer()) {
+                spec.frameOffset = sourceSpec["frameOffset"].get<int>();
+            }
+            if (sourceSpec.contains("fadePercent") &&
+                sourceSpec["fadePercent"].is_number()) {
+                spec.fadePercent = sourceSpec["fadePercent"].get<float>();
+            }
+            if (sourceSpec.contains("flightStrength") &&
+                sourceSpec["flightStrength"].is_number()) {
+                spec.flightStrength = sourceSpec["flightStrength"].get<float>();
+            }
+            if (sourceSpec.contains("fps") && sourceSpec["fps"].is_number()) {
+                spec.fps = sourceSpec["fps"].get<float>();
+            }
+            if (sourceSpec.contains("mode") && sourceSpec["mode"].is_string()) {
+                spec.mode = sourceSpec["mode"].get<std::string>();
+            }
+            if (sourceSpec.contains("trailSpeedFactor") &&
+                sourceSpec["trailSpeedFactor"].is_number()) {
+                spec.trailSpeedFactor = sourceSpec["trailSpeedFactor"].get<float>();
+            }
+            return spec;
+        };
+
+        if (entry.contains("specs") && entry["specs"].is_array()) {
+            renderSpecs[index].clear();
+            for (const auto &savedSpec : entry["specs"]) {
+                if (savedSpec.is_object()) {
+                    renderSpecs[index].push_back(readSpec(savedSpec, RenderSpec{}));
+                }
+            }
+            if (renderSpecs[index].empty()) {
+                renderSpecs[index].push_back(RenderSpec{});
+            }
+        } else {
+            const RenderSpec legacySpec = readSpec(entry, renderSpecs[index].front());
+            const RenderSpec &defaultSpec = renderSpecs[index].front();
+            if (legacySpec.frameOffset != defaultSpec.frameOffset ||
+                legacySpec.fadePercent != defaultSpec.fadePercent ||
+                legacySpec.flightStrength != defaultSpec.flightStrength ||
+                legacySpec.fps != defaultSpec.fps || legacySpec.mode != defaultSpec.mode) {
+                renderSpecs[index].push_back(legacySpec);
+            }
+        }
+        selectedSpecIndices[index] = renderSpecs[index].size() - 1;
+    }
+}
+
+std::size_t ofApp::savedSpecCount(std::size_t videoIndex) const {
+    return videoIndex < renderSpecs.size() ? renderSpecs[videoIndex].size() : 0;
+}
+
+bool ofApp::saveRenderSpecs() {
+    if (renderSpecs.size() != sources.size() || selectedVideo >= renderSpecs.size()) {
+        return false;
+    }
+
+    RenderSpec spec;
+    spec.frameOffset = frameOffset;
+    spec.fadePercent = pixelFadePercent;
+    spec.flightStrength = pixelFlightStrength;
+    spec.trailSpeedFactor = trailSpeedFactor;
+    spec.fps = 60.0f;
+    spec.mode = "invertedGrayscale";
+    renderSpecs[selectedVideo].push_back(spec);
+    selectedSpecIndices[selectedVideo] = renderSpecs[selectedVideo].size() - 1;
+
+    ofJson document;
+    document["version"] = 1;
+    document["videos"] = ofJson::array();
+    for (std::size_t index = 0; index < sources.size(); ++index) {
+        ofJson savedSpecs = ofJson::array();
+        for (std::size_t specIndex = 0; specIndex < renderSpecs[index].size(); ++specIndex) {
+            const RenderSpec &entry = renderSpecs[index][specIndex];
+            savedSpecs.push_back({
+                {"name", "Spec " + ofToString(specIndex + 1, 2, '0')},
+                {"fps", entry.fps},
+                {"mode", entry.mode},
+                {"frameOffset", entry.frameOffset},
+                {"fadePercent", entry.fadePercent},
+                {"flightStrength", entry.flightStrength},
+                {"trailSpeedFactor", entry.trailSpeedFactor}
+            });
+        }
+        document["videos"].push_back({
+            {"source", sources[index].label},
+            {"input", sources[index].path},
+            {"specs", savedSpecs}
+        });
+    }
+
+    const auto specsPath = appDataPath("render-specs.json");
+    std::filesystem::create_directories(specsPath.parent_path());
+    if (!ofSavePrettyJson(specsPath, document)) {
+        renderSpecs[selectedVideo].pop_back();
+        selectedSpecIndices[selectedVideo] = renderSpecs[selectedVideo].size() - 1;
+        renderStatus = "Could not save render specs";
+        return false;
+    }
+    renderStatus = "Saved spec " + ofToString(renderSpecs[selectedVideo].size()) +
+                   " for " + sources[selectedVideo].label;
+    return true;
 }
 
 void ofApp::loadVideo(std::size_t index) {
@@ -54,6 +198,14 @@ void ofApp::loadVideo(std::size_t index) {
     hasProcessedFrame = false;
     invertedLayerInitialized = false;
     selectedVideo = index;
+    if (renderSpecs.size() == sources.size() && !renderSpecs[index].empty()) {
+        selectedSpecIndices[index] = renderSpecs[index].size() - 1;
+        const RenderSpec &spec = renderSpecs[index][selectedSpecIndices[index]];
+        frameOffset = spec.frameOffset;
+        pixelFadePercent = spec.fadePercent;
+        pixelFlightStrength = spec.flightStrength;
+        trailSpeedFactor = spec.trailSpeedFactor;
+    }
     applyTargetFrameRate();
 
     player.setPixelFormat(OF_PIXELS_RGB);
@@ -198,8 +350,11 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
     constexpr float maxTrailLength = 48.0f;
 
     auto drawStreak = [&](const TravellingPixel &traveller) {
-        const float trailLength = std::min(maxTrailLength,
-                                           traveller.initialSpeed * halfLifeFrames);
+        const float baseTrailLength = std::min(maxTrailLength,
+                                               traveller.initialSpeed * halfLifeFrames);
+        const float speedAdjustment = std::exp(-trailSpeedFactor * traveller.initialSpeed);
+        const float trailLength = std::clamp(baseTrailLength * speedAdjustment,
+                                             0.0f, maxTrailLength);
         const int steps = std::max(1, static_cast<int>(std::ceil(trailLength)));
         for (int step = 0; step <= steps; ++step) {
             const float distance = trailLength * step / steps;
@@ -211,6 +366,9 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
             }
             const int x = static_cast<int>(std::lround(streakX));
             const int y = static_cast<int>(std::lround(streakY));
+            if (x < 0 || x >= width || y < 0 || y >= height) {
+                continue;
+            }
 
             const float strength = 1.0f - distance / (trailLength + 1.0f);
             const int brightness = static_cast<int>(traveller.brightness * strength);
@@ -356,7 +514,9 @@ void ofApp::draw() {
     }
     ofDrawBitmapString("" + ofToString(selectedVideo + 1) + "  " + sources[selectedVideo].label +
                            "   |   " + layerName + "   |   Offset: " +
-                           ofToString(frameOffset) + " frames   |   " + fpsLabel,
+                           ofToString(frameOffset) + " frames   |   " + fpsLabel +
+                           "   |   Saved specs: " +
+                           ofToString(savedSpecCount(selectedVideo)),
                        28, ofGetHeight() - 185);
     ofDrawBitmapString(traceCount, ofGetWidth() - 320, ofGetHeight() - 158);
     ofSetColor(155);
@@ -379,8 +539,10 @@ void ofApp::keyPressed(int key) {
                     std::isfinite(enteredValue)) {
                     if (editingFloatInput == FloatInput::PixelFade) {
                         pixelFadePercent = enteredValue;
-                    } else {
+                    } else if (editingFloatInput == FloatInput::FlightStrength) {
                         pixelFlightStrength = enteredValue;
+                    } else {
+                        trailSpeedFactor = enteredValue;
                     }
                 }
             }
@@ -458,12 +620,15 @@ void ofApp::keyPressed(int key) {
 
 void ofApp::drawPixelControls() {
     const float y = ofGetHeight() - 135;
-    fadeValueField.set(245, y + 2, 110, 27);
-    flightStrengthField.set(535, y + 2, 110, 27);
+    fadeValueField.set(205, y + 2, 95, 27);
+    flightStrengthField.set(440, y + 2, 95, 27);
+    trailSpeedFactorField.set(700, y + 2, 105, 27);
+    saveSpecsButton.set(850, y + 2, 125, 27);
 
     ofSetColor(235);
     ofDrawBitmapString("Pixel fade (% / frame)", 28, y + 20);
-    ofDrawBitmapString("Flight strength", 390, y + 20);
+    ofDrawBitmapString("Flight strength", 320, y + 20);
+    ofDrawBitmapString("Trail speed factor", 540, y + 20);
 
     const auto drawField = [](const ofRectangle &rect, const std::string &value,
                               bool selected) {
@@ -483,11 +648,25 @@ void ofApp::drawPixelControls() {
     const std::string flightValue = editingFloatInput == FloatInput::FlightStrength
                                         ? floatInputText
                                         : ofToString(pixelFlightStrength, 2);
+    const std::string trailSpeedFactorValue =
+        editingFloatInput == FloatInput::TrailSpeedFactor
+            ? floatInputText
+            : ofToString(trailSpeedFactor, 2);
     drawField(fadeValueField, fadeValue, editingFloatInput == FloatInput::PixelFade);
     drawField(flightStrengthField, flightValue,
               editingFloatInput == FloatInput::FlightStrength);
+    drawField(trailSpeedFactorField, trailSpeedFactorValue,
+              editingFloatInput == FloatInput::TrailSpeedFactor);
+    ofSetColor(48, 87, 67);
+    ofDrawRectangle(saveSpecsButton);
+    ofNoFill();
+    ofSetColor(115, 165, 130);
+    ofDrawRectangle(saveSpecsButton);
+    ofFill();
+    ofSetColor(245);
+    ofDrawBitmapString("Save specs", saveSpecsButton.x + 24, saveSpecsButton.y + 18);
     ofSetColor(155);
-    ofDrawBitmapString("Fade marks per frame; flight strength multiplies travel distance. Click a value, type a float, then Enter. Esc cancels.",
+    ofDrawBitmapString("Positive trail speed factor shortens trails more at higher speeds. Click a value, type a float, then Enter. Esc cancels.",
                        28, ofGetHeight() - 60);
 }
 
@@ -495,10 +674,16 @@ void ofApp::mousePressed(int x, int y, int button) {
     if (button != OF_MOUSE_BUTTON_LEFT) {
         return;
     }
-    if (fadeValueField.inside(x, y)) {
+    if (saveSpecsButton.inside(x, y)) {
+        editingFloatInput = FloatInput::None;
+        floatInputText.clear();
+        saveRenderSpecs();
+    } else if (fadeValueField.inside(x, y)) {
         editingFloatInput = FloatInput::PixelFade;
     } else if (flightStrengthField.inside(x, y)) {
         editingFloatInput = FloatInput::FlightStrength;
+    } else if (trailSpeedFactorField.inside(x, y)) {
+        editingFloatInput = FloatInput::TrailSpeedFactor;
     } else {
         editingFloatInput = FloatInput::None;
     }
@@ -509,6 +694,7 @@ void ofApp::startBatchRender() {
     batchRendering = true;
     renderStatus = "Preparing batch renders";
     renderVideoIndex = 0;
+    renderSpecIndex = 0;
     layerMode = LayerMode::InvertedGrayscale;
     ofSetFrameRate(0);
 
@@ -516,8 +702,9 @@ void ofApp::startBatchRender() {
         appDataPath("renders/inverted-motion-trails");
     std::filesystem::create_directories(outputDirectory);
 
-    while (renderVideoIndex < sources.size() && !startRenderVideo(renderVideoIndex)) {
-        ++renderVideoIndex;
+    while (renderVideoIndex < sources.size() &&
+           !startRenderVideo(renderVideoIndex, renderSpecIndex)) {
+        advanceBatchRender();
     }
     if (renderVideoIndex >= sources.size()) {
         batchRendering = false;
@@ -525,20 +712,26 @@ void ofApp::startBatchRender() {
     }
 }
 
-bool ofApp::startRenderVideo(std::size_t index) {
-    static const std::vector<int> offsets = {8, 15, 30, 2, 5};
+bool ofApp::startRenderVideo(std::size_t videoIndex, std::size_t specIndex) {
     renderCapture.release();
-    if (index >= sources.size()) {
+    if (videoIndex >= sources.size() || videoIndex >= renderSpecs.size() ||
+        specIndex >= renderSpecs[videoIndex].size()) {
         return false;
     }
 
-    selectedVideo = index;
-    frameOffset = offsets[index];
+    selectedVideo = videoIndex;
+    renderSpecIndex = specIndex;
+    selectedSpecIndices[videoIndex] = specIndex;
+    const RenderSpec &spec = renderSpecs[videoIndex][specIndex];
+    frameOffset = spec.frameOffset;
+    pixelFadePercent = spec.fadePercent;
+    pixelFlightStrength = spec.flightStrength;
+    trailSpeedFactor = spec.trailSpeedFactor;
     renderedFrameCount = 0;
     renderPendingTicks = 0;
     renderTickRemainder = 0;
-    renderSourceFps = sources[index].averageFps;
-    renderOutputFps = targetFrameRate(index);
+    renderSourceFps = sources[videoIndex].averageFps;
+    renderOutputFps = spec.fps;
     frameHistory.clear();
     renderSourceFrame.clear();
     previousVideoFrame.clear();
@@ -547,28 +740,44 @@ bool ofApp::startRenderVideo(std::size_t index) {
     invertedLayerInitialized = false;
     hasProcessedFrame = false;
 
-    if (!renderCapture.open(appDataPath(sources[index].path).string())) {
-        ofLogError("ofApp") << "Could not open render input: " << sources[index].path;
-        renderStatus = "Could not open render input: " + sources[index].label;
+    if (!renderCapture.open(appDataPath(sources[videoIndex].path).string())) {
+        ofLogError("ofApp") << "Could not open render input: " << sources[videoIndex].path;
+        renderStatus = "Could not open render input: " + sources[videoIndex].label;
         return false;
     }
 
     const int width = static_cast<int>(renderCapture.get(cv::CAP_PROP_FRAME_WIDTH));
     const int height = static_cast<int>(renderCapture.get(cv::CAP_PROP_FRAME_HEIGHT));
-    const std::string name = ofToLower(sources[index].label);
+    const std::string name = ofToLower(sources[videoIndex].label);
+    const std::string specFolder = "spec-" +
+                                   ofToString(static_cast<int>(specIndex + 1), 2, '0');
     renderFramesDirectory =
-        appDataPath("renders/inverted-motion-trails/frames/" + name).string();
+        appDataPath("renders/inverted-motion-trails/frames/" + name + "/" +
+                    specFolder).string();
     std::filesystem::remove_all(renderFramesDirectory);
     std::filesystem::create_directories(renderFramesDirectory);
     renderGrayFrame.allocate(width, height, OF_PIXELS_GRAY);
 
-    renderStatus = "Exporting " + sources[index].label + " PNG frames at " +
+    renderStatus = "Exporting " + sources[videoIndex].label + " spec " +
+                   ofToString(specIndex + 1) + " PNG frames at " +
                    ofToString(width) + "x" + ofToString(height) +
                    ", " + ofToString(renderOutputFps, 2) + " FPS, offset " +
                    ofToString(frameOffset);
-    ofLogNotice("ofApp") << "Rendering " << sources[index].label << " at " << renderOutputFps
+    ofLogNotice("ofApp") << "Rendering " << sources[videoIndex].label << " spec "
+                          << (specIndex + 1) << " at " << renderOutputFps
                           << " fps with offset " << frameOffset;
     return true;
+}
+
+void ofApp::advanceBatchRender() {
+    if (renderVideoIndex >= renderSpecs.size()) {
+        return;
+    }
+    ++renderSpecIndex;
+    if (renderSpecIndex >= renderSpecs[renderVideoIndex].size()) {
+        ++renderVideoIndex;
+        renderSpecIndex = 0;
+    }
 }
 
 void ofApp::updateBatchRender() {
@@ -580,10 +789,12 @@ void ofApp::updateBatchRender() {
             ofLogNotice("ofApp") << "Finished " << sources[renderVideoIndex].label << ": "
                                   << renderedFrameCount << " frames";
             renderStatus = "Finished " + sources[renderVideoIndex].label + ": " +
+                           " spec " + ofToString(renderSpecIndex + 1) + ": " +
                            ofToString(renderedFrameCount) + " frames";
-            ++renderVideoIndex;
-            while (renderVideoIndex < sources.size() && !startRenderVideo(renderVideoIndex)) {
-                ++renderVideoIndex;
+            advanceBatchRender();
+            while (renderVideoIndex < sources.size() &&
+                   !startRenderVideo(renderVideoIndex, renderSpecIndex)) {
+                advanceBatchRender();
             }
             if (renderVideoIndex >= sources.size()) {
                 batchRendering = false;

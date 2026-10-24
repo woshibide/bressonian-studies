@@ -25,13 +25,23 @@ private:
     enum class FloatInput {
         None,
         PixelFade,
-        FlightStrength
+        FlightStrength,
+        TrailSpeedFactor
     };
 
     struct VideoSource {
         std::string label;
         std::string path;
         float averageFps;
+    };
+
+    struct RenderSpec {
+        int frameOffset = 3;
+        float fadePercent = 2.5f;
+        float flightStrength = 1.0f;
+        float fps = 60.0f;
+        std::string mode = "invertedGrayscale";
+        float trailSpeedFactor = 0.15f;
     };
 
     struct TravellingPixel {
@@ -52,11 +62,17 @@ private:
     float targetFrameRate(std::size_t index) const;
     void applyTargetFrameRate();
     void drawPixelControls();
+    std::size_t savedSpecCount(std::size_t videoIndex) const;
+    void loadRenderSpecs();
+    bool saveRenderSpecs();
     void startBatchRender();
-    bool startRenderVideo(std::size_t index);
+    bool startRenderVideo(std::size_t videoIndex, std::size_t specIndex);
+    void advanceBatchRender();
     void updateBatchRender();
 
     std::vector<VideoSource> sources;
+    std::vector<std::vector<RenderSpec>> renderSpecs;
+    std::vector<std::size_t> selectedSpecIndices;
     ofVideoPlayer player;
     ofTexture processedTexture;
     std::deque<ofPixels> frameHistory;
@@ -68,6 +84,7 @@ private:
     std::vector<TravellingPixel> travellingPixels;
     cv::VideoCapture renderCapture;
     std::size_t renderVideoIndex = 0;
+    std::size_t renderSpecIndex = 0;
     std::size_t renderedFrameCount = 0;
     int renderPendingTicks = 0;
     double renderTickRemainder = 0;
@@ -78,8 +95,11 @@ private:
     int frameOffset = 3;
     float pixelFadePercent = 2.5f;
     float pixelFlightStrength = 1.0f;
+    float trailSpeedFactor = 0.15f;
     ofRectangle fadeValueField;
     ofRectangle flightStrengthField;
+    ofRectangle trailSpeedFactorField;
+    ofRectangle saveSpecsButton;
     FloatInput editingFloatInput = FloatInput::None;
     std::string floatInputText;
     std::string renderStatus;

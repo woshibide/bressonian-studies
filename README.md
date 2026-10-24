@@ -1,30 +1,45 @@
-# About emptyExample
+# CCTV Motion Difference
 
-![Screenshot of emptyExample](emptyExample.png)
+An openFrameworks and OpenCV app for exploring motion masks and travelling pixel traces in video.
 
-### Learning Objectives
+## Run
 
-This example is the simplest possible openFrameworks app! It does nothing. 
+From this directory, build and launch the app:
 
-...Well, *almost* nothing. Although it may not be apparent, the emptyExample activates all of the default system states. (For example, it sets the default fill color to white; it just doesn't happen to draw anything with it.)
+```sh
+make Release -j4
+open bin/helloOpenCv.app
+```
 
-The emptyExample is great for making sure that your openFrameworks development environment is compiling properly. It can also be useful as a "starter template" for making simple programs. 
+Quit any already-running copy before reopening after a rebuild, so macOS does not reuse the old process.
 
-The emptyExample will help you understand what are the bare necessities of an openFrameworks program. In this regard, you can think of it as a "Hello World" for OF. 
+To launch the existing build without rebuilding, run `open bin/helloOpenCv.app` or open `bin/helloOpenCv.app` in Finder.
 
+## Controls
 
-### Expected Behavior
+- Press `1`–`5` to select a video.
+- Press Left or Right to cycle through motion threshold, inverted traces, and original video.
+- Press Up or Down to adjust the frame offset.
+- Press `F` to switch between source frame rate and 60 FPS.
+- Click a float field, type a value, then press Enter to apply it; press Esc to cancel.
+- A positive trail speed factor makes higher-speed pixels leave shorter trails; zero preserves the old speed-to-length calculation.
+- Click **Save specs** to append the selected video's current offset, fade, flight strength, and trail speed factor to `bin/data/render-specs.json`.
+- The app shows how many specs are saved for the selected video, and each save gets the next `Spec NN` name.
+- The render specs file sets every output to 60 FPS in inverted grayscale mode.
+- Press `R` to render every saved spec for every video into its own numbered folder. Rendering is not started when the app opens.
 
-When launching this app, you should see a light-gray screen. 
+## Prepared render settings
 
-* There's no interaction. 
-* There's nothing to see. 
-* That's it. 
-
-Instructions for using the app:
-
-* There's nothing to do. Move along.
-
-### Other classes used in this file
-
-This example uses no other classes.
+| Video | Offset | Fade (% / frame) | Flight strength | Trail speed factor |
+| --- | ---: | ---: | ---: | ---: |
+| Cercany Spec 01 | 3 | 2.50 | 1000 | 0.15 |
+| Cercany Spec 02 | 60 | 2.50 | 1000 | 0.15 |
+| Cercany Spec 03 | 60 | 30 | -20 | 0.15 |
+| Daegu Spec 01 | 3 | 100 | -1 | 0.15 |
+| Korea Spec 01 | 3 | 75 | -50 | 0.15 |
+| Meagan Spec 01 | 15 | 100 | -50 | 0.15 |
+| Meagan Spec 02 | 15 | 98 | -0.2 | 0.15 |
+| Meagan Spec 03 | 15 | 60 | -50 | 0.15 |
+| Meagan Spec 04 | 15 | 99 | -0.01 | 0.15 |
+| Norway Spec 01 | 1 | 99 | -1 | 0.15 |
+| Norway Spec 02 | 3 | 100 | -0.02 | 0.15 |
