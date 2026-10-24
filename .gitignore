@@ -3,5 +3,6 @@
 /obj/
 /bin/data/fps-normalized/*.mp4
 /bin/data/renders/**/*.mp4
+/bin/data/renders/inverted-motion-trails/frames/
 /.vscode/browse.db*
 /.vscode/*.lock
