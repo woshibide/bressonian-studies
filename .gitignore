@@ -1,0 +1,7 @@
+.DS_Store
+/bin/*.app/
+/obj/
+/bin/data/fps-normalized/*.mp4
+/bin/data/renders/**/*.mp4
+/.vscode/browse.db*
+/.vscode/*.lock
