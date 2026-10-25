@@ -13,7 +13,7 @@
 
 namespace {
 
-constexpr std::size_t maxTravellingPixels = 250000;
+constexpr std::size_t maxTravellingPixels = 2500000;
 
 of::filesystem::path appDataPath(const of::filesystem::path &relativePath) {
     return (ofFilePath::getCurrentExeDirFS() / "../../../data" / relativePath)
@@ -193,6 +193,9 @@ void ofApp::loadVideo(std::size_t index) {
     latestVideoFrame.clear();
     previousVideoFrame.clear();
     accumulatedInvertedFrame.clear();
+    displacementMapPixels.clear();
+    displacedVideoPixels.clear();
+    displacementField.release();
     travellingPixels.clear();
     hasLatestVideoFrame = false;
     hasProcessedFrame = false;
@@ -256,7 +259,7 @@ void ofApp::update() {
 
     if (layerMode == LayerMode::MotionMask) {
         updateMotionFrame();
-    } else if (layerMode == LayerMode::InvertedGrayscale) {
+    } else if (layerMode != LayerMode::OriginalVideo) {
         updateInvertedFrame(pixels, sourceFrameChanged);
     }
 }
@@ -303,14 +306,28 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
 
     if (!invertedLayerInitialized || !accumulatedInvertedFrame.isAllocated() ||
         accumulatedInvertedFrame.getWidth() != width ||
-        accumulatedInvertedFrame.getHeight() != height) {
+        accumulatedInvertedFrame.getHeight() != height ||
+        displacementField.cols != width || displacementField.rows != height) {
         accumulatedInvertedFrame.allocate(width, height, OF_PIXELS_RGB);
         std::memset(accumulatedInvertedFrame.getData(), 0,
                     accumulatedInvertedFrame.size());
+        displacementMapPixels.allocate(width, height, OF_PIXELS_RGB);
+        displacedVideoPixels.allocate(width, height, OF_PIXELS_RGB);
+        displacementField = cv::Mat::zeros(height, width, CV_32FC2);
+        for (int y = 0; y < height; ++y) {
+            unsigned char *mapRow = displacementMapPixels.getData() +
+                                    static_cast<std::size_t>(y) * width * 3;
+            for (int x = 0; x < width; ++x) {
+                mapRow[x * 3] = 128;
+                mapRow[x * 3 + 1] = 128;
+                mapRow[x * 3 + 2] = 0;
+            }
+        }
+        std::memcpy(displacedVideoPixels.getData(), pixels.getData(), pixels.size());
         previousVideoFrame = pixels;
         travellingPixels.clear();
         invertedLayerInitialized = true;
-        uploadProcessedPixels(accumulatedInvertedFrame);
+        uploadSelectedInvertedLayer();
         return;
     }
 
@@ -341,6 +358,55 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
     cv::Mat accumulatedFrame(height, width, CV_8UC3,
                              accumulatedInvertedFrame.getData());
     const float fadeFactor = 1.0f - pixelFadePercent / 100.0f;
+    cv::Mat mapX(height, width, CV_32FC1);
+    cv::Mat mapY(height, width, CV_32FC1);
+    constexpr float maxMapOffset = 127.0f;
+    for (int y = 0; y < height; ++y) {
+        cv::Vec2f *fieldRow = displacementField.ptr<cv::Vec2f>(y);
+        float *mapXRow = mapX.ptr<float>(y);
+        float *mapYRow = mapY.ptr<float>(y);
+        unsigned char *encodedMapRow = displacementMapPixels.getData() +
+                                       static_cast<std::size_t>(y) * width * 3;
+        const cv::Vec2f *flowRow = sourceFrameChanged ? flow.ptr<cv::Vec2f>(y) : nullptr;
+        const unsigned char *movingRow = sourceFrameChanged
+                                             ? movingPixels.ptr<unsigned char>(y)
+                                             : nullptr;
+        for (int x = 0; x < width; ++x) {
+            cv::Vec2f &offset = fieldRow[x];
+            offset[0] *= fadeFactor;
+            offset[1] *= fadeFactor;
+            if (sourceFrameChanged && movingRow[x] != 0) {
+                const cv::Vec2f movement = flowRow[x];
+                if (std::isfinite(movement[0]) && std::isfinite(movement[1])) {
+                    offset[0] += movement[0] * pixelFlightStrength;
+                    offset[1] += movement[1] * pixelFlightStrength;
+                }
+            }
+            offset[0] = std::clamp(offset[0], -maxMapOffset, maxMapOffset);
+            offset[1] = std::clamp(offset[1], -maxMapOffset, maxMapOffset);
+
+            mapXRow[x] = x - offset[0];
+            mapYRow[x] = y - offset[1];
+            encodedMapRow[x * 3] = static_cast<unsigned char>(
+                std::lround(offset[0] + 128.0f));
+            encodedMapRow[x * 3 + 1] = static_cast<unsigned char>(
+                std::lround(offset[1] + 128.0f));
+            encodedMapRow[x * 3 + 2] = static_cast<unsigned char>(
+                std::min(255.0f, std::max(std::abs(offset[0]), std::abs(offset[1])) * 2.0f));
+        }
+    }
+    cv::Mat displacedFrame(height, width, CV_8UC3, displacedVideoPixels.getData());
+    cv::Mat previousDisplacedFrame = displacedFrame.clone();
+    cv::Mat warpedCurrentFrame;
+    cv::Mat warpedFeedbackFrame;
+    cv::remap(currentFrame, warpedCurrentFrame, mapX, mapY, cv::INTER_LINEAR,
+              cv::BORDER_REPLICATE);
+    cv::remap(previousDisplacedFrame, warpedFeedbackFrame, mapX, mapY,
+              cv::INTER_LINEAR, cv::BORDER_REPLICATE);
+    const float feedbackWeight = std::clamp(fadeFactor, 0.0f, 0.98f);
+    cv::addWeighted(warpedCurrentFrame, 1.0f - feedbackWeight,
+                    warpedFeedbackFrame, feedbackWeight, 0.0, displacedFrame);
+
     if (fadeFactor < 1.0f) {
         accumulatedFrame.convertTo(accumulatedFrame, CV_8UC3, fadeFactor);
     }
@@ -461,7 +527,17 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
         previousVideoFrame = pixels;
     }
 
-    uploadProcessedPixels(accumulatedInvertedFrame);
+    uploadSelectedInvertedLayer();
+}
+
+void ofApp::uploadSelectedInvertedLayer() {
+    if (layerMode == LayerMode::DisplacementMap) {
+        uploadProcessedPixels(displacementMapPixels);
+    } else if (layerMode == LayerMode::DisplacedVideo) {
+        uploadProcessedPixels(displacedVideoPixels);
+    } else {
+        uploadProcessedPixels(accumulatedInvertedFrame);
+    }
 }
 
 void ofApp::uploadProcessedPixels(const ofPixels &pixels) {
@@ -499,11 +575,24 @@ void ofApp::draw() {
     }
 
     ofSetColor(235);
-    const std::string layerName = layerMode == LayerMode::MotionMask
-                                      ? "Motion threshold"
-                                      : layerMode == LayerMode::InvertedGrayscale
-                                            ? "Inverted grayscale, travelling pixel traces"
-                                            : "Original video";
+    std::string layerName;
+    switch (layerMode) {
+    case LayerMode::MotionMask:
+        layerName = "Motion threshold";
+        break;
+    case LayerMode::InvertedGrayscale:
+        layerName = "Inverted grayscale, travelling pixel traces";
+        break;
+    case LayerMode::DisplacementMap:
+        layerName = "Displacement map (R=X, G=Y, 128=neutral)";
+        break;
+    case LayerMode::DisplacedVideo:
+        layerName = "Displaced original video";
+        break;
+    case LayerMode::OriginalVideo:
+        layerName = "Original video";
+        break;
+    }
     const std::string fpsLabel = useSixtyFps
                                      ? "60 FPS"
                                      : "Source FPS " + ofToString(sources[selectedVideo].averageFps, 2);
@@ -587,13 +676,15 @@ void ofApp::keyPressed(int key) {
     }
 
     if (key == OF_KEY_LEFT || key == OF_KEY_RIGHT) {
-        const int layerCount = 3;
+        const int layerCount = 5;
         const int currentLayer = static_cast<int>(layerMode);
         const int direction = key == OF_KEY_RIGHT ? 1 : -1;
         const int nextLayer = (currentLayer + direction + layerCount) % layerCount;
         layerMode = static_cast<LayerMode>(nextLayer);
         hasProcessedFrame = false;
-        if (layerMode == LayerMode::InvertedGrayscale) {
+        if (layerMode == LayerMode::InvertedGrayscale ||
+            layerMode == LayerMode::DisplacementMap ||
+            layerMode == LayerMode::DisplacedVideo) {
             invertedLayerInitialized = false;
             travellingPixels.clear();
         }
@@ -736,6 +827,9 @@ bool ofApp::startRenderVideo(std::size_t videoIndex, std::size_t specIndex) {
     renderSourceFrame.clear();
     previousVideoFrame.clear();
     accumulatedInvertedFrame.clear();
+    displacementMapPixels.clear();
+    displacedVideoPixels.clear();
+    displacementField.release();
     travellingPixels.clear();
     invertedLayerInitialized = false;
     hasProcessedFrame = false;
@@ -756,6 +850,10 @@ bool ofApp::startRenderVideo(std::size_t videoIndex, std::size_t specIndex) {
                     specFolder).string();
     std::filesystem::remove_all(renderFramesDirectory);
     std::filesystem::create_directories(renderFramesDirectory);
+    renderDisplacementFramesDirectory = renderFramesDirectory + "/displacement-map";
+    renderDisplacedVideoFramesDirectory = renderFramesDirectory + "/displaced-video";
+    std::filesystem::create_directories(renderDisplacementFramesDirectory);
+    std::filesystem::create_directories(renderDisplacedVideoFramesDirectory);
     renderGrayFrame.allocate(width, height, OF_PIXELS_GRAY);
 
     renderStatus = "Exporting " + sources[videoIndex].label + " spec " +
@@ -836,6 +934,26 @@ void ofApp::updateBatchRender() {
     if (!ofSaveImage(renderGrayFrame, framePath, OF_IMAGE_QUALITY_BEST)) {
         renderStatus = "Could not save frame " + ofToString(renderedFrameCount) +
                        " for " + sources[renderVideoIndex].label;
+        renderCapture.release();
+        batchRendering = false;
+        return;
+    }
+    const std::string mapFramePath = renderDisplacementFramesDirectory + "/frame-" +
+                                     ofToString(renderedFrameCount, 6, '0') + ".png";
+    if (!ofSaveImage(displacementMapPixels, mapFramePath, OF_IMAGE_QUALITY_BEST)) {
+        renderStatus = "Could not save displacement map " +
+                       ofToString(renderedFrameCount) + " for " +
+                       sources[renderVideoIndex].label;
+        renderCapture.release();
+        batchRendering = false;
+        return;
+    }
+    const std::string displacedFramePath = renderDisplacedVideoFramesDirectory + "/frame-" +
+                                           ofToString(renderedFrameCount, 6, '0') + ".png";
+    if (!ofSaveImage(displacedVideoPixels, displacedFramePath, OF_IMAGE_QUALITY_BEST)) {
+        renderStatus = "Could not save displaced frame " +
+                       ofToString(renderedFrameCount) + " for " +
+                       sources[renderVideoIndex].label;
         renderCapture.release();
         batchRendering = false;
         return;

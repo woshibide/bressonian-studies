@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ofMain.h"
+#include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
 
 #include <deque>
@@ -19,6 +20,8 @@ private:
     enum class LayerMode {
         MotionMask,
         InvertedGrayscale,
+        DisplacementMap,
+        DisplacedVideo,
         OriginalVideo
     };
 
@@ -58,6 +61,7 @@ private:
     void loadVideo(std::size_t index);
     void updateMotionFrame();
     void updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged);
+    void uploadSelectedInvertedLayer();
     void uploadProcessedPixels(const ofPixels &pixels);
     float targetFrameRate(std::size_t index) const;
     void applyTargetFrameRate();
@@ -79,8 +83,12 @@ private:
     ofPixels latestVideoFrame;
     ofPixels previousVideoFrame;
     ofPixels accumulatedInvertedFrame;
+    ofPixels displacementMapPixels;
+    ofPixels displacedVideoPixels;
+    cv::Mat displacementField;
     ofPixels renderSourceFrame;
     ofPixels renderGrayFrame;
+    ofPixels renderDisplacementMapFrame;
     std::vector<TravellingPixel> travellingPixels;
     cv::VideoCapture renderCapture;
     std::size_t renderVideoIndex = 0;
@@ -91,6 +99,8 @@ private:
     float renderSourceFps = 0;
     float renderOutputFps = 0;
     std::string renderFramesDirectory;
+    std::string renderDisplacementFramesDirectory;
+    std::string renderDisplacedVideoFramesDirectory;
     std::size_t selectedVideo = 0;
     int frameOffset = 3;
     float pixelFadePercent = 2.5f;
