@@ -6,3 +6,4 @@
 /bin/data/renders/inverted-motion-trails/frames/
 /.vscode/browse.db*
 /.vscode/*.lock
+/.claude/settings.local.json

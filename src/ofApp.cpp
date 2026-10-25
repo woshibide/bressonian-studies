@@ -3,13 +3,19 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/video/tracking.hpp>
+#include <opencv2/videoio.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <csignal>
+#include <cstdio>
 #include <cstring>
 #include <cstdlib>
-#include <filesystem>
-#include <random>
+#include <iostream>
+#include <thread>
+#include <unistd.h>
 
 namespace {
 
@@ -27,30 +33,15 @@ void ofApp::setup() {
     ofSetWindowShape(1100, 720);
     ofSetVerticalSync(false);
 
-    sources = {
-        {"Cercany", "fps-normalized/cercany-native-cadence.mp4", 15.73f},
-        {"Daegu", "fps-normalized/daegu-native-cadence.mp4", 15.04f},
-        {"Korea", "fps-normalized/korea-native-cadence.mp4", 15.00f},
-        {"Meagan", "fps-normalized/meagan-native-cadence.mp4", 27.59f},
-        {"Norway", "fps-normalized/norway-native-cadence.mp4", 45.44f}
-    };
-
-    loadRenderSpecs();
+    loadRenderSpecs(appDataPath("render-specs.json"));
 
     loadVideo(0);
 }
 
-void ofApp::loadRenderSpecs() {
-    renderSpecs = {
-        {{3, 2.50f, 1000.0f, 60.0f, "invertedGrayscale"}},
-        {{3, 100.0f, -1.0f, 60.0f, "invertedGrayscale"}},
-        {{3, 75.0f, -50.0f, 60.0f, "invertedGrayscale"}},
-        {{15, 100.0f, -50.0f, 60.0f, "invertedGrayscale"}},
-        {{1, 99.0f, -1.0f, 60.0f, "invertedGrayscale"}}
-    };
+void ofApp::loadRenderSpecs(const std::filesystem::path &specsPath) {
+    renderSpecs.assign(sources.size(), {});
     selectedSpecIndices.assign(sources.size(), 0);
 
-    const auto specsPath = appDataPath("render-specs.json");
     if (!std::filesystem::exists(specsPath)) {
         return;
     }
@@ -103,26 +94,17 @@ void ofApp::loadRenderSpecs() {
         };
 
         if (entry.contains("specs") && entry["specs"].is_array()) {
-            renderSpecs[index].clear();
             for (const auto &savedSpec : entry["specs"]) {
                 if (savedSpec.is_object()) {
                     renderSpecs[index].push_back(readSpec(savedSpec, RenderSpec{}));
                 }
             }
-            if (renderSpecs[index].empty()) {
-                renderSpecs[index].push_back(RenderSpec{});
-            }
         } else {
-            const RenderSpec legacySpec = readSpec(entry, renderSpecs[index].front());
-            const RenderSpec &defaultSpec = renderSpecs[index].front();
-            if (legacySpec.frameOffset != defaultSpec.frameOffset ||
-                legacySpec.fadePercent != defaultSpec.fadePercent ||
-                legacySpec.flightStrength != defaultSpec.flightStrength ||
-                legacySpec.fps != defaultSpec.fps || legacySpec.mode != defaultSpec.mode) {
-                renderSpecs[index].push_back(legacySpec);
-            }
+            renderSpecs[index].push_back(readSpec(entry, RenderSpec{}));
         }
-        selectedSpecIndices[index] = renderSpecs[index].size() - 1;
+        if (!renderSpecs[index].empty()) {
+            selectedSpecIndices[index] = renderSpecs[index].size() - 1;
+        }
     }
 }
 
@@ -130,10 +112,45 @@ std::size_t ofApp::savedSpecCount(std::size_t videoIndex) const {
     return videoIndex < renderSpecs.size() ? renderSpecs[videoIndex].size() : 0;
 }
 
+ofApp::LayerMode ofApp::layerModeFromName(const std::string &name) const {
+    if (name == "motionMask") {
+        return LayerMode::MotionMask;
+    }
+    if (name == "displacementMap") {
+        return LayerMode::DisplacementMap;
+    }
+    if (name == "displacedVideo") {
+        return LayerMode::DisplacedVideo;
+    }
+    if (name == "originalVideo") {
+        return LayerMode::OriginalVideo;
+    }
+    return LayerMode::InvertedGrayscale;
+}
+
+std::string ofApp::layerModeName() const {
+    switch (layerMode) {
+    case LayerMode::MotionMask:
+        return "motionMask";
+    case LayerMode::DisplacementMap:
+        return "displacementMap";
+    case LayerMode::DisplacedVideo:
+        return "displacedVideo";
+    case LayerMode::OriginalVideo:
+        return "originalVideo";
+    case LayerMode::InvertedGrayscale:
+    default:
+        return "invertedGrayscale";
+    }
+}
+
 bool ofApp::saveRenderSpecs() {
     if (renderSpecs.size() != sources.size() || selectedVideo >= renderSpecs.size()) {
         return false;
     }
+
+    // Preserve queue edits made directly to the JSON since the app was opened.
+    loadRenderSpecs(appDataPath("render-specs.json"));
 
     RenderSpec spec;
     spec.frameOffset = frameOffset;
@@ -141,7 +158,7 @@ bool ofApp::saveRenderSpecs() {
     spec.flightStrength = pixelFlightStrength;
     spec.trailSpeedFactor = trailSpeedFactor;
     spec.fps = 60.0f;
-    spec.mode = "invertedGrayscale";
+    spec.mode = layerModeName();
     renderSpecs[selectedVideo].push_back(spec);
     selectedSpecIndices[selectedVideo] = renderSpecs[selectedVideo].size() - 1;
 
@@ -149,6 +166,9 @@ bool ofApp::saveRenderSpecs() {
     document["version"] = 1;
     document["videos"] = ofJson::array();
     for (std::size_t index = 0; index < sources.size(); ++index) {
+        if (renderSpecs[index].empty()) {
+            continue;
+        }
         ofJson savedSpecs = ofJson::array();
         for (std::size_t specIndex = 0; specIndex < renderSpecs[index].size(); ++specIndex) {
             const RenderSpec &entry = renderSpecs[index][specIndex];
@@ -192,6 +212,7 @@ void ofApp::loadVideo(std::size_t index) {
     frameHistory.clear();
     latestVideoFrame.clear();
     previousVideoFrame.clear();
+    motionMaskPixels.clear();
     accumulatedInvertedFrame.clear();
     displacementMapPixels.clear();
     displacedVideoPixels.clear();
@@ -208,6 +229,14 @@ void ofApp::loadVideo(std::size_t index) {
         pixelFadePercent = spec.fadePercent;
         pixelFlightStrength = spec.flightStrength;
         trailSpeedFactor = spec.trailSpeedFactor;
+        layerMode = layerModeFromName(spec.mode);
+    } else {
+        const RenderSpec defaults;
+        selectedSpecIndices[index] = 0;
+        frameOffset = defaults.frameOffset;
+        pixelFadePercent = defaults.fadePercent;
+        pixelFlightStrength = defaults.flightStrength;
+        trailSpeedFactor = defaults.trailSpeedFactor;
     }
     applyTargetFrameRate();
 
@@ -230,11 +259,6 @@ void ofApp::applyTargetFrameRate() {
 }
 
 void ofApp::update() {
-    if (batchRendering) {
-        updateBatchRender();
-        return;
-    }
-
     player.update();
     const bool sourceFrameChanged = player.isLoaded() && player.isFrameNew();
     if (sourceFrameChanged) {
@@ -258,15 +282,28 @@ void ofApp::update() {
     }
 
     if (layerMode == LayerMode::MotionMask) {
-        updateMotionFrame();
+        if (updateMotionFrame()) {
+            uploadProcessedPixels(motionMaskPixels);
+        }
     } else if (layerMode != LayerMode::OriginalVideo) {
         updateInvertedFrame(pixels, sourceFrameChanged);
+        uploadSelectedInvertedLayer();
     }
 }
 
-void ofApp::updateMotionFrame() {
+bool ofApp::updateMotionFrame() {
     if (frameHistory.size() <= static_cast<std::size_t>(frameOffset)) {
-        return;
+        if (!frameHistory.empty()) {
+            const ofPixels &current = frameHistory.back();
+            const int width = static_cast<int>(current.getWidth());
+            const int height = static_cast<int>(current.getHeight());
+            if (!motionMaskPixels.isAllocated() || motionMaskPixels.getWidth() != width ||
+                motionMaskPixels.getHeight() != height) {
+                motionMaskPixels.allocate(width, height, OF_PIXELS_RGB);
+            }
+            std::memset(motionMaskPixels.getData(), 0, motionMaskPixels.size());
+        }
+        return false;
     }
 
     const ofPixels &current = frameHistory.back();
@@ -291,7 +328,8 @@ void ofApp::updateMotionFrame() {
     output.allocate(width, height, OF_PIXELS_RGB);
     std::memcpy(output.getData(), binaryDifference.data,
                 binaryDifference.total() * binaryDifference.elemSize());
-    uploadProcessedPixels(output);
+    motionMaskPixels = output;
+    return true;
 }
 
 void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged) {
@@ -300,9 +338,7 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
     cv::Mat currentFrame(height, width, CV_8UC3,
                          const_cast<unsigned char *>(pixels.getData()));
     cv::Mat grayscale;
-    cv::Mat inverted;
     cv::cvtColor(currentFrame, grayscale, cv::COLOR_RGB2GRAY);
-    cv::bitwise_not(grayscale, inverted);
 
     if (!invertedLayerInitialized || !accumulatedInvertedFrame.isAllocated() ||
         accumulatedInvertedFrame.getWidth() != width ||
@@ -327,7 +363,6 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
         previousVideoFrame = pixels;
         travellingPixels.clear();
         invertedLayerInitialized = true;
-        uploadSelectedInvertedLayer();
         return;
     }
 
@@ -355,46 +390,47 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
         flow *= 2.0f;
     }
 
-    cv::Mat accumulatedFrame(height, width, CV_8UC3,
-                             accumulatedInvertedFrame.getData());
     const float fadeFactor = 1.0f - pixelFadePercent / 100.0f;
     cv::Mat mapX(height, width, CV_32FC1);
     cv::Mat mapY(height, width, CV_32FC1);
     constexpr float maxMapOffset = 127.0f;
-    for (int y = 0; y < height; ++y) {
-        cv::Vec2f *fieldRow = displacementField.ptr<cv::Vec2f>(y);
-        float *mapXRow = mapX.ptr<float>(y);
-        float *mapYRow = mapY.ptr<float>(y);
-        unsigned char *encodedMapRow = displacementMapPixels.getData() +
-                                       static_cast<std::size_t>(y) * width * 3;
-        const cv::Vec2f *flowRow = sourceFrameChanged ? flow.ptr<cv::Vec2f>(y) : nullptr;
-        const unsigned char *movingRow = sourceFrameChanged
-                                             ? movingPixels.ptr<unsigned char>(y)
-                                             : nullptr;
-        for (int x = 0; x < width; ++x) {
-            cv::Vec2f &offset = fieldRow[x];
-            offset[0] *= fadeFactor;
-            offset[1] *= fadeFactor;
-            if (sourceFrameChanged && movingRow[x] != 0) {
-                const cv::Vec2f movement = flowRow[x];
-                if (std::isfinite(movement[0]) && std::isfinite(movement[1])) {
-                    offset[0] += movement[0] * pixelFlightStrength;
-                    offset[1] += movement[1] * pixelFlightStrength;
+    // Rows are independent, so the field update runs across all cores.
+    cv::parallel_for_(cv::Range(0, height), [&](const cv::Range &rows) {
+        for (int y = rows.start; y < rows.end; ++y) {
+            cv::Vec2f *fieldRow = displacementField.ptr<cv::Vec2f>(y);
+            float *mapXRow = mapX.ptr<float>(y);
+            float *mapYRow = mapY.ptr<float>(y);
+            unsigned char *encodedMapRow = displacementMapPixels.getData() +
+                                           static_cast<std::size_t>(y) * width * 3;
+            const cv::Vec2f *flowRow = sourceFrameChanged ? flow.ptr<cv::Vec2f>(y) : nullptr;
+            const unsigned char *movingRow = sourceFrameChanged
+                                                 ? movingPixels.ptr<unsigned char>(y)
+                                                 : nullptr;
+            for (int x = 0; x < width; ++x) {
+                cv::Vec2f &offset = fieldRow[x];
+                offset[0] *= fadeFactor;
+                offset[1] *= fadeFactor;
+                if (sourceFrameChanged && movingRow[x] != 0) {
+                    const cv::Vec2f movement = flowRow[x];
+                    if (std::isfinite(movement[0]) && std::isfinite(movement[1])) {
+                        offset[0] += movement[0] * pixelFlightStrength;
+                        offset[1] += movement[1] * pixelFlightStrength;
+                    }
                 }
-            }
-            offset[0] = std::clamp(offset[0], -maxMapOffset, maxMapOffset);
-            offset[1] = std::clamp(offset[1], -maxMapOffset, maxMapOffset);
+                offset[0] = std::clamp(offset[0], -maxMapOffset, maxMapOffset);
+                offset[1] = std::clamp(offset[1], -maxMapOffset, maxMapOffset);
 
-            mapXRow[x] = x - offset[0];
-            mapYRow[x] = y - offset[1];
-            encodedMapRow[x * 3] = static_cast<unsigned char>(
-                std::lround(offset[0] + 128.0f));
-            encodedMapRow[x * 3 + 1] = static_cast<unsigned char>(
-                std::lround(offset[1] + 128.0f));
-            encodedMapRow[x * 3 + 2] = static_cast<unsigned char>(
-                std::min(255.0f, std::max(std::abs(offset[0]), std::abs(offset[1])) * 2.0f));
+                mapXRow[x] = x - offset[0];
+                mapYRow[x] = y - offset[1];
+                encodedMapRow[x * 3] = static_cast<unsigned char>(
+                    std::lround(offset[0] + 128.0f));
+                encodedMapRow[x * 3 + 1] = static_cast<unsigned char>(
+                    std::lround(offset[1] + 128.0f));
+                encodedMapRow[x * 3 + 2] = static_cast<unsigned char>(
+                    std::min(255.0f, std::max(std::abs(offset[0]), std::abs(offset[1])) * 2.0f));
+            }
         }
-    }
+    });
     cv::Mat displacedFrame(height, width, CV_8UC3, displacedVideoPixels.getData());
     cv::Mat previousDisplacedFrame = displacedFrame.clone();
     cv::Mat warpedCurrentFrame;
@@ -406,6 +442,25 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
     const float feedbackWeight = std::clamp(fadeFactor, 0.0f, 0.98f);
     cv::addWeighted(warpedCurrentFrame, 1.0f - feedbackWeight,
                     warpedFeedbackFrame, feedbackWeight, 0.0, displacedFrame);
+
+    // Traces only feed the inverted grayscale layer; other layers skip the simulation.
+    if (layerMode == LayerMode::InvertedGrayscale) {
+        updateTravellingPixels(grayscale, flow, movingPixels, sourceFrameChanged);
+    }
+    if (sourceFrameChanged) {
+        previousVideoFrame = pixels;
+    }
+}
+
+void ofApp::updateTravellingPixels(const cv::Mat &grayscale, const cv::Mat &flow,
+                                   const cv::Mat &movingPixels, bool sourceFrameChanged) {
+    const int width = grayscale.cols;
+    const int height = grayscale.rows;
+    cv::Mat inverted;
+    cv::bitwise_not(grayscale, inverted);
+    cv::Mat accumulatedFrame(height, width, CV_8UC3,
+                             accumulatedInvertedFrame.getData());
+    const float fadeFactor = 1.0f - pixelFadePercent / 100.0f;
 
     if (fadeFactor < 1.0f) {
         accumulatedFrame.convertTo(accumulatedFrame, CV_8UC3, fadeFactor);
@@ -471,7 +526,6 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
         std::vector<TravellingPixel> sampledTravellers;
         sampledTravellers.reserve(std::min<std::size_t>(availableSlots, 65536));
         std::size_t eligiblePixels = 0;
-        static std::mt19937_64 sampler{0x6f70656e4657ULL};
 
         if (availableSlots > 0) {
             for (int y = 0; y < height; ++y) {
@@ -510,7 +564,8 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
                         sampledTravellers.push_back(traveller);
                     } else {
                         const auto replacementIndex =
-                            std::uniform_int_distribution<std::size_t>(0, eligiblePixels)(sampler);
+                            std::uniform_int_distribution<std::size_t>(0, eligiblePixels)(
+                                travellerSampler);
                         if (replacementIndex < availableSlots) {
                             sampledTravellers[replacementIndex] = traveller;
                         }
@@ -524,10 +579,7 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
             travellingPixels.push_back(traveller);
             drawStreak(traveller);
         }
-        previousVideoFrame = pixels;
     }
-
-    uploadSelectedInvertedLayer();
 }
 
 void ofApp::uploadSelectedInvertedLayer() {
@@ -610,7 +662,7 @@ void ofApp::draw() {
     ofDrawBitmapString(traceCount, ofGetWidth() - 320, ofGetHeight() - 158);
     ofSetColor(155);
     drawPixelControls();
-    ofDrawBitmapString("1-5: select video     Left / Right: select layer     Up / Down: offset     F: source / 60 FPS     R: render batch",
+    ofDrawBitmapString("1-6: select video     Left / Right: select layer     Up / Down: offset     F: source / 60 FPS     make render: render queue",
                        28, ofGetHeight() - 28);
     if (!renderStatus.empty()) {
         ofSetColor(235);
@@ -665,12 +717,7 @@ void ofApp::keyPressed(int key) {
         return;
     }
 
-    if (key == 'r' && !batchRendering) {
-        startBatchRender();
-        return;
-    }
-
-    if (key >= '1' && key <= '5') {
+    if (key >= '1' && key <= '6') {
         loadVideo(static_cast<std::size_t>(key - '1'));
         return;
     }
@@ -781,184 +828,393 @@ void ofApp::mousePressed(int x, int y, int button) {
     floatInputText.clear();
 }
 
-void ofApp::startBatchRender() {
-    batchRendering = true;
-    renderStatus = "Preparing batch renders";
-    renderVideoIndex = 0;
-    renderSpecIndex = 0;
-    layerMode = LayerMode::InvertedGrayscale;
-    ofSetFrameRate(0);
-
-    const std::filesystem::path outputDirectory =
-        appDataPath("renders/inverted-motion-trails");
-    std::filesystem::create_directories(outputDirectory);
-
-    while (renderVideoIndex < sources.size() &&
-           !startRenderVideo(renderVideoIndex, renderSpecIndex)) {
-        advanceBatchRender();
-    }
-    if (renderVideoIndex >= sources.size()) {
-        batchRendering = false;
-        applyTargetFrameRate();
-    }
-}
-
-bool ofApp::startRenderVideo(std::size_t videoIndex, std::size_t specIndex) {
-    renderCapture.release();
-    if (videoIndex >= sources.size() || videoIndex >= renderSpecs.size() ||
-        specIndex >= renderSpecs[videoIndex].size()) {
-        return false;
-    }
-
-    selectedVideo = videoIndex;
-    renderSpecIndex = specIndex;
-    selectedSpecIndices[videoIndex] = specIndex;
+bool ofApp::renderJob(std::size_t videoIndex, std::size_t specIndex,
+                      const std::filesystem::path &outputDirectory, std::size_t maxFrames,
+                      RenderProgress &progress) {
     const RenderSpec &spec = renderSpecs[videoIndex][specIndex];
+    const std::string label = sources[videoIndex].label + " spec " +
+                              ofToString(static_cast<int>(specIndex + 1), 2, '0');
+    auto fail = [&](const std::string &message) {
+        ofLogError("render") << label << ": " << message;
+        progress.error = message;
+        return false;
+    };
+    selectedVideo = videoIndex;
     frameOffset = spec.frameOffset;
     pixelFadePercent = spec.fadePercent;
     pixelFlightStrength = spec.flightStrength;
     trailSpeedFactor = spec.trailSpeedFactor;
-    renderedFrameCount = 0;
-    renderPendingTicks = 0;
-    renderTickRemainder = 0;
-    renderSourceFps = sources[videoIndex].averageFps;
-    renderOutputFps = spec.fps;
+    layerMode = layerModeFromName(spec.mode);
     frameHistory.clear();
-    renderSourceFrame.clear();
+    motionMaskPixels.clear();
     previousVideoFrame.clear();
     accumulatedInvertedFrame.clear();
     displacementMapPixels.clear();
     displacedVideoPixels.clear();
     displacementField.release();
     travellingPixels.clear();
+    travellerSampler.seed(0x6f70656e4657ULL);
     invertedLayerInitialized = false;
-    hasProcessedFrame = false;
 
-    if (!renderCapture.open(appDataPath(sources[videoIndex].path).string())) {
-        ofLogError("ofApp") << "Could not open render input: " << sources[videoIndex].path;
-        renderStatus = "Could not open render input: " + sources[videoIndex].label;
+    const auto inputPath = appDataPath(sources[videoIndex].path);
+    cv::VideoCapture capture;
+    if (!capture.open(inputPath.string())) {
+        return fail("could not open " + inputPath.string());
+    }
+
+    const int width = static_cast<int>(capture.get(cv::CAP_PROP_FRAME_WIDTH));
+    const int height = static_cast<int>(capture.get(cv::CAP_PROP_FRAME_HEIGHT));
+    const auto &videoDirectory = outputDirectory;
+    const std::string videoName = ofToLower(sources[videoIndex].label) + "-spec-" +
+                                  ofToString(static_cast<int>(specIndex + 1), 2, '0');
+    const auto videoPath = videoDirectory / (videoName + ".mp4");
+    const auto partialPath = videoDirectory / (videoName + ".partial.mp4");
+    std::filesystem::create_directories(videoDirectory);
+    if (partialPath.string().find('\'') != std::string::npos) {
+        return fail("output path contains a quote: " + partialPath.string());
+    }
+
+    // Frames go to ffmpeg as raw RGB; the encode matches the earlier renders (x264, CRF 18).
+    const std::string command =
+        "ffmpeg -v error -y -f rawvideo -pix_fmt rgb24 -s " + ofToString(width) + "x" +
+        ofToString(height) + " -r " + ofToString(spec.fps) + " -i - " +
+        "-vf 'pad=ceil(iw/2)*2:ceil(ih/2)*2' -c:v libx264 -crf 18 -pix_fmt yuv420p " +
+        "-movflags +faststart '" + partialPath.string() + "'";
+    FILE *encoder = popen(command.c_str(), "w");
+    if (encoder == nullptr) {
+        return fail("could not start ffmpeg");
+    }
+    auto finishEncoder = [&](bool framesOk) {
+        const int status = pclose(encoder);
+        if (framesOk && status == 0) {
+            std::filesystem::rename(partialPath, videoPath);
+            return true;
+        }
+        std::filesystem::remove(partialPath);
+        return fail("ffmpeg failed (status " + ofToString(status) + ")");
+    };
+
+    ofLogNotice("render") << label << ": " << spec.mode << " at " << spec.fps
+                          << " fps, offset " << frameOffset << " -> " << videoPath;
+    const auto startTime = std::chrono::steady_clock::now();
+    const float sourceFps = sources[videoIndex].averageFps;
+    double tickRemainder = 0;
+    std::size_t frameCount = 0;
+    ofPixels sourceFrame;
+    cv::Mat bgrFrame;
+    cv::Mat rgbFrame;
+    while ((maxFrames == 0 || frameCount < maxFrames) && capture.read(bgrFrame)) {
+        cv::cvtColor(bgrFrame, rgbFrame, cv::COLOR_BGR2RGB);
+        sourceFrame.setFromPixels(rgbFrame.data, rgbFrame.cols, rgbFrame.rows, OF_PIXELS_RGB);
+        // Each source frame becomes zero or more output frames at the spec frame rate.
+        tickRemainder += spec.fps / sourceFps;
+        const int ticks = static_cast<int>(std::floor(tickRemainder));
+        tickRemainder -= ticks;
+
+        for (int tick = 0; tick < ticks && (maxFrames == 0 || frameCount < maxFrames); ++tick) {
+            updateInvertedFrame(sourceFrame, tick == 0);
+            if (layerMode == LayerMode::MotionMask) {
+                frameHistory.push_back(sourceFrame);
+                while (frameHistory.size() > static_cast<std::size_t>(frameOffset + 1)) {
+                    frameHistory.pop_front();
+                }
+                updateMotionFrame();
+            }
+
+            const ofPixels *output = &accumulatedInvertedFrame;
+            if (layerMode == LayerMode::MotionMask) {
+                output = &motionMaskPixels;
+            } else if (layerMode == LayerMode::DisplacementMap) {
+                output = &displacementMapPixels;
+            } else if (layerMode == LayerMode::DisplacedVideo) {
+                output = &displacedVideoPixels;
+            } else if (layerMode == LayerMode::OriginalVideo) {
+                output = &sourceFrame;
+            }
+            if (std::fwrite(output->getData(), 1, output->size(), encoder) != output->size()) {
+                finishEncoder(false);
+                return false;
+            }
+
+            ++frameCount;
+            progress.frames = frameCount;
+            if (frameCount % 250 == 0) {
+                const double seconds = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - startTime).count();
+                ofLogNotice("render") << label << ": " << frameCount << " frames, "
+                                      << ofToString(frameCount / seconds, 2) << " fps";
+            }
+        }
+    }
+    if (!finishEncoder(true)) {
         return false;
     }
 
-    const int width = static_cast<int>(renderCapture.get(cv::CAP_PROP_FRAME_WIDTH));
-    const int height = static_cast<int>(renderCapture.get(cv::CAP_PROP_FRAME_HEIGHT));
-    const std::string name = ofToLower(sources[videoIndex].label);
-    const std::string specFolder = "spec-" +
-                                   ofToString(static_cast<int>(specIndex + 1), 2, '0');
-    renderFramesDirectory =
-        appDataPath("renders/inverted-motion-trails/frames/" + name + "/" +
-                    specFolder).string();
-    std::filesystem::remove_all(renderFramesDirectory);
-    std::filesystem::create_directories(renderFramesDirectory);
-    renderDisplacementFramesDirectory = renderFramesDirectory + "/displacement-map";
-    renderDisplacedVideoFramesDirectory = renderFramesDirectory + "/displaced-video";
-    std::filesystem::create_directories(renderDisplacementFramesDirectory);
-    std::filesystem::create_directories(renderDisplacedVideoFramesDirectory);
-    renderGrayFrame.allocate(width, height, OF_PIXELS_GRAY);
-
-    renderStatus = "Exporting " + sources[videoIndex].label + " spec " +
-                   ofToString(specIndex + 1) + " PNG frames at " +
-                   ofToString(width) + "x" + ofToString(height) +
-                   ", " + ofToString(renderOutputFps, 2) + " FPS, offset " +
-                   ofToString(frameOffset);
-    ofLogNotice("ofApp") << "Rendering " << sources[videoIndex].label << " spec "
-                          << (specIndex + 1) << " at " << renderOutputFps
-                          << " fps with offset " << frameOffset;
+    const double seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - startTime).count();
+    ofLogNotice("render") << label << ": finished " << frameCount << " frames in "
+                          << ofToString(seconds, 1) << " s ("
+                          << ofToString(frameCount / std::max(seconds, 0.001), 2) << " fps)";
     return true;
 }
 
-void ofApp::advanceBatchRender() {
-    if (renderVideoIndex >= renderSpecs.size()) {
-        return;
-    }
-    ++renderSpecIndex;
-    if (renderSpecIndex >= renderSpecs[renderVideoIndex].size()) {
-        ++renderVideoIndex;
-        renderSpecIndex = 0;
-    }
-}
+int ofApp::runRenderCommand(const std::vector<std::string> &args) {
+    // A failed ffmpeg must surface as a write error, not terminate the process.
+    std::signal(SIGPIPE, SIG_IGN);
+    const unsigned int cores = std::max(1u, std::thread::hardware_concurrency());
+    std::size_t jobCount = std::max(1u, cores / 3);
+    std::size_t maxFrames = 0;
+    std::filesystem::path specsPath = appDataPath("render-specs.json");
+    // Each run gets its own folder, so earlier videos are never overwritten.
+    std::filesystem::path outputDirectory =
+        appDataPath("renders/inverted-motion-trails/video/" +
+                    ofGetTimestampString("%Y%m%d-%H%M%S"));
+    std::string only;
 
-void ofApp::updateBatchRender() {
-    bool sourceFrameChanged = false;
-    if (renderPendingTicks == 0) {
-        cv::Mat bgrFrame;
-        if (!renderCapture.read(bgrFrame)) {
-            renderCapture.release();
-            ofLogNotice("ofApp") << "Finished " << sources[renderVideoIndex].label << ": "
-                                  << renderedFrameCount << " frames";
-            renderStatus = "Finished " + sources[renderVideoIndex].label + ": " +
-                           " spec " + ofToString(renderSpecIndex + 1) + ": " +
-                           ofToString(renderedFrameCount) + " frames";
-            advanceBatchRender();
-            while (renderVideoIndex < sources.size() &&
-                   !startRenderVideo(renderVideoIndex, renderSpecIndex)) {
-                advanceBatchRender();
-            }
-            if (renderVideoIndex >= sources.size()) {
-                batchRendering = false;
-                player.setPosition(0);
-                player.play();
-                applyTargetFrameRate();
-                ofLogNotice("ofApp") << "Batch render complete";
-                renderStatus = "Batch render complete";
-            }
-            return;
+    auto usage = []() {
+        ofLogError("render")
+            << "usage: helloOpenCv --render [--jobs N] [--frames N] [--only video[/spec]]"
+               " [--specs file.json] [--out directory]";
+        return 2;
+    };
+    auto parseCount = [](const std::string &text, std::size_t &value) {
+        char *end = nullptr;
+        const long parsed = std::strtol(text.c_str(), &end, 10);
+        if (text.empty() || *end != '\0' || parsed < 0) {
+            return false;
         }
-
-        cv::Mat rgbFrame;
-        cv::cvtColor(bgrFrame, rgbFrame, cv::COLOR_BGR2RGB);
-        renderSourceFrame.setFromPixels(rgbFrame.data, rgbFrame.cols, rgbFrame.rows,
-                                        OF_PIXELS_RGB);
-        renderTickRemainder += renderOutputFps / renderSourceFps;
-        renderPendingTicks = static_cast<int>(std::floor(renderTickRemainder));
-        renderTickRemainder -= renderPendingTicks;
-        if (renderPendingTicks == 0) {
-            return;
+        value = static_cast<std::size_t>(parsed);
+        return true;
+    };
+    for (std::size_t index = 1; index < args.size(); ++index) {
+        const std::string &option = args[index];
+        if (index + 1 >= args.size()) {
+            return usage();
         }
-        sourceFrameChanged = true;
+        const std::string &value = args[++index];
+        if (option == "--jobs") {
+            if (!parseCount(value, jobCount) || jobCount == 0) {
+                return usage();
+            }
+        } else if (option == "--frames") {
+            if (!parseCount(value, maxFrames)) {
+                return usage();
+            }
+        } else if (option == "--only") {
+            only = ofToLower(value);
+        } else if (option == "--specs") {
+            specsPath = std::filesystem::absolute(value);
+        } else if (option == "--out") {
+            outputDirectory = std::filesystem::absolute(value);
+        } else {
+            return usage();
+        }
     }
 
-    updateInvertedFrame(renderSourceFrame, sourceFrameChanged);
-    --renderPendingTicks;
+    if (!std::filesystem::exists(specsPath)) {
+        ofLogError("render") << "render queue not found: " << specsPath;
+        return 1;
+    }
+    ofApp queue;
+    queue.loadRenderSpecs(specsPath);
+    std::vector<std::pair<std::size_t, std::size_t>> jobs;
+    for (std::size_t video = 0; video < queue.renderSpecs.size(); ++video) {
+        for (std::size_t spec = 0; spec < queue.renderSpecs[video].size(); ++spec) {
+            const std::string name = ofToLower(queue.sources[video].label);
+            if (only.empty() || only == name || only == name + "/" + ofToString(spec + 1)) {
+                jobs.emplace_back(video, spec);
+            }
+        }
+    }
+    if (jobs.empty()) {
+        ofLogError("render") << "no queued specs match" << (only.empty() ? "" : " " + only)
+                             << " in " << specsPath;
+        return 1;
+    }
 
-    cv::Mat accumulatedFrame(static_cast<int>(renderSourceFrame.getHeight()),
-                             static_cast<int>(renderSourceFrame.getWidth()), CV_8UC3,
-                             accumulatedInvertedFrame.getData());
-    cv::Mat grayscaleOutput;
-    cv::extractChannel(accumulatedFrame, grayscaleOutput, 0);
-    renderGrayFrame.setFromPixels(grayscaleOutput.data, grayscaleOutput.cols,
-                                  grayscaleOutput.rows, OF_PIXELS_GRAY);
+    // Keep the queue next to the videos so the run can be reproduced.
+    std::filesystem::create_directories(outputDirectory);
+    std::filesystem::copy_file(specsPath, outputDirectory / "render-specs.json",
+                               std::filesystem::copy_options::overwrite_existing);
 
-    const std::string framePath = renderFramesDirectory + "/frame-" +
-                                  ofToString(renderedFrameCount, 6, '0') + ".png";
-    if (!ofSaveImage(renderGrayFrame, framePath, OF_IMAGE_QUALITY_BEST)) {
-        renderStatus = "Could not save frame " + ofToString(renderedFrameCount) +
-                       " for " + sources[renderVideoIndex].label;
-        renderCapture.release();
-        batchRendering = false;
-        return;
+    std::vector<RenderProgress> progress(jobs.size());
+    for (std::size_t job = 0; job < jobs.size(); ++job) {
+        const auto [video, spec] = jobs[job];
+        const RenderSpec &renderSpec = queue.renderSpecs[video][spec];
+        progress[job].name = ofToLower(queue.sources[video].label) + "/" + ofToString(spec + 1);
+        progress[job].mode = renderSpec.mode;
+        // Same frame-rate conversion as renderJob, from the container's frame count.
+        cv::VideoCapture capture(appDataPath(queue.sources[video].path).string());
+        const double sourceFrames = std::max(0.0, capture.get(cv::CAP_PROP_FRAME_COUNT));
+        progress[job].expectedFrames = static_cast<std::size_t>(
+            sourceFrames * renderSpec.fps / queue.sources[video].averageFps);
+        if (maxFrames > 0) {
+            progress[job].expectedFrames = std::min(progress[job].expectedFrames, maxFrames);
+        }
     }
-    const std::string mapFramePath = renderDisplacementFramesDirectory + "/frame-" +
-                                     ofToString(renderedFrameCount, 6, '0') + ".png";
-    if (!ofSaveImage(displacementMapPixels, mapFramePath, OF_IMAGE_QUALITY_BEST)) {
-        renderStatus = "Could not save displacement map " +
-                       ofToString(renderedFrameCount) + " for " +
-                       sources[renderVideoIndex].label;
-        renderCapture.release();
-        batchRendering = false;
-        return;
+
+    jobCount = std::min(jobCount, jobs.size());
+    const bool liveStatus = isatty(STDOUT_FILENO) != 0;
+    std::cout << jobs.size() << (jobs.size() == 1 ? " spec, " : " specs, ") << jobCount
+              << " at once -> "
+              << outputDirectory.string() << std::endl;
+    if (liveStatus) {
+        // The status table replaces log lines; errors are listed after it.
+        ofSetLogLevel(OF_LOG_SILENT);
     }
-    const std::string displacedFramePath = renderDisplacedVideoFramesDirectory + "/frame-" +
-                                           ofToString(renderedFrameCount, 6, '0') + ".png";
-    if (!ofSaveImage(displacedVideoPixels, displacedFramePath, OF_IMAGE_QUALITY_BEST)) {
-        renderStatus = "Could not save displaced frame " +
-                       ofToString(renderedFrameCount) + " for " +
-                       sources[renderVideoIndex].label;
-        renderCapture.release();
-        batchRendering = false;
-        return;
+
+    const auto startTime = std::chrono::steady_clock::now();
+    auto secondsSinceStart = [&]() {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime)
+            .count();
+    };
+    std::atomic<std::size_t> nextJob{0};
+    std::atomic<std::size_t> finishedJobs{0};
+    std::vector<std::thread> workers;
+    for (std::size_t worker = 0; worker < jobCount; ++worker) {
+        workers.emplace_back([&]() {
+            // Each worker owns a separate processing state.
+            ofApp renderer;
+            renderer.renderSpecs = queue.renderSpecs;
+            for (std::size_t job = nextJob++; job < jobs.size(); job = nextJob++) {
+                RenderProgress &jobProgress = progress[job];
+                jobProgress.startSeconds = secondsSinceStart();
+                jobProgress.state = RenderState::Running;
+                const bool rendered = renderer.renderJob(jobs[job].first, jobs[job].second,
+                                                         outputDirectory, maxFrames, jobProgress);
+                jobProgress.endSeconds = secondsSinceStart();
+                jobProgress.state = rendered ? RenderState::Done : RenderState::Failed;
+                ++finishedJobs;
+            }
+        });
     }
-    ++renderedFrameCount;
-    renderStatus = "Rendering " + sources[renderVideoIndex].label + " at offset " +
-                   ofToString(frameOffset) + ": " + ofToString(renderedFrameCount) + " frames";
+
+    auto clock = [](double seconds) {
+        const int total = static_cast<int>(std::max(0.0, seconds));
+        const int hours = total / 3600;
+        const std::string minutesSeconds = ofToString((total / 60) % 60, 2, '0') + ":" +
+                                           ofToString(total % 60, 2, '0');
+        return hours > 0 ? ofToString(hours) + ":" + minutesSeconds : minutesSeconds;
+    };
+    auto bar = [](double fraction, int width) {
+        const int filled = static_cast<int>(std::clamp(fraction, 0.0, 1.0) * width);
+        std::string text;
+        for (int cell = 0; cell < width; ++cell) {
+            text += cell < filled ? "█" : "░";
+        }
+        return text;
+    };
+    std::size_t nameWidth = 0;
+    std::size_t modeWidth = 0;
+    for (const RenderProgress &jobProgress : progress) {
+        nameWidth = std::max(nameWidth, jobProgress.name.size());
+        modeWidth = std::max(modeWidth, jobProgress.mode.size());
+    }
+    auto pad = [](const std::string &text, std::size_t width) {
+        return text + std::string(width > text.size() ? width - text.size() : 0, ' ');
+    };
+    auto rate = [](std::size_t frames, double seconds) {
+        return seconds > 0.5 ? frames / seconds : 0.0;
+    };
+    constexpr int barWidth = 24;
+    std::size_t drawnLines = 0;
+    auto drawStatus = [&]() {
+        const double now = secondsSinceStart();
+        std::vector<std::string> lines;
+        std::size_t doneFrames = 0;
+        std::size_t expectedFrames = 0;
+        std::size_t done = 0;
+        std::size_t failed = 0;
+        std::size_t running = 0;
+        for (const RenderProgress &jobProgress : progress) {
+            const RenderState state = jobProgress.state;
+            const std::size_t frames = jobProgress.frames;
+            const double started = jobProgress.startSeconds;
+            doneFrames += frames;
+            expectedFrames += state == RenderState::Done
+                                  ? frames
+                                  : std::max(frames, jobProgress.expectedFrames);
+            std::string line = "  " + pad(jobProgress.name, nameWidth) + "  " +
+                               pad(jobProgress.mode, modeWidth) + "  ";
+            if (state == RenderState::Queued) {
+                line = "\033[2m" + line + "queued\033[0m";
+            } else if (state == RenderState::Running) {
+                ++running;
+                const double fps = rate(frames, now - started);
+                const double fraction = jobProgress.expectedFrames > 0
+                                            ? double(frames) / jobProgress.expectedFrames
+                                            : 0.0;
+                const std::size_t remaining =
+                    jobProgress.expectedFrames > frames ? jobProgress.expectedFrames - frames : 0;
+                line = "\033[33m" + line + bar(fraction, barWidth) + "\033[0m  " +
+                       ofToString(frames) + "/" + ofToString(jobProgress.expectedFrames) + "  " +
+                       ofToString(static_cast<int>(fraction * 100)) + "%  " +
+                       ofToString(fps, 1) + " fps  eta " +
+                       (fps > 0 ? clock(remaining / fps) : std::string("--:--"));
+            } else if (state == RenderState::Done) {
+                ++done;
+                const double seconds = jobProgress.endSeconds - started;
+                line = "\033[32m" + line + "done\033[0m  " + ofToString(frames) + " frames in " +
+                       clock(seconds) + "  " + ofToString(rate(frames, seconds), 1) + " fps";
+            } else {
+                ++failed;
+                line = "\033[31m" + line + "failed: " + jobProgress.error + "\033[0m";
+            }
+            lines.push_back(line);
+        }
+        const double totalFps = rate(doneFrames, now);
+        const double fraction = expectedFrames > 0 ? double(doneFrames) / expectedFrames : 0.0;
+        const std::size_t remaining = expectedFrames > doneFrames ? expectedFrames - doneFrames : 0;
+        lines.insert(lines.begin(),
+                     "\033[1mqueue\033[0m  " + ofToString(done) + "/" +
+                         ofToString(progress.size()) + " done  " + ofToString(running) +
+                         " running  " + ofToString(failed) + " failed  " + clock(now) +
+                         " elapsed");
+        lines.insert(lines.begin() + 1,
+                     "  " + pad("total", nameWidth + modeWidth + 2) + "  " +
+                         bar(fraction, barWidth) + "  " + ofToString(doneFrames) + "/" +
+                         ofToString(expectedFrames) + "  " +
+                         ofToString(static_cast<int>(fraction * 100)) + "%  " +
+                         ofToString(totalFps, 1) + " fps  eta " +
+                         (totalFps > 0 && running > 0 ? clock(remaining / totalFps)
+                                                      : std::string("--:--")));
+
+        // Move back over the previous table and redraw it in place.
+        std::string frame;
+        if (drawnLines > 0) {
+            frame += "\033[" + ofToString(drawnLines) + "F";
+        }
+        for (const std::string &line : lines) {
+            frame += "\033[2K" + line + "\n";
+        }
+        std::cout << frame << std::flush;
+        drawnLines = lines.size();
+    };
+
+    if (liveStatus) {
+        while (finishedJobs < jobs.size()) {
+            drawStatus();
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+    }
+    for (auto &worker : workers) {
+        worker.join();
+    }
+    std::size_t failures = 0;
+    for (const RenderProgress &jobProgress : progress) {
+        failures += jobProgress.state == RenderState::Failed ? 1 : 0;
+    }
+    if (liveStatus) {
+        drawStatus();
+        ofSetLogLevel(OF_LOG_NOTICE);
+        for (const RenderProgress &jobProgress : progress) {
+            if (jobProgress.state == RenderState::Failed) {
+                std::cout << jobProgress.name << ": " << jobProgress.error << "\n";
+            }
+        }
+    }
+
+    std::cout << "done: " << (jobs.size() - failures) << "/" << jobs.size() << " specs in "
+              << clock(secondsSinceStart()) << " -> " << outputDirectory.string() << std::endl;
+    return failures == 0 ? 0 : 1;
 }

@@ -4,29 +4,26 @@ An openFrameworks and OpenCV app for exploring motion masks and travelling pixel
 
 ## Run
 
-From this directory, build and launch the app:
+From this directory, rebuild, quit the open interactive app, and relaunch it:
 
 ```sh
-make Release -j4
-./bin/helloOpenCv.app/Contents/MacOS/helloOpenCv
+make dev
 ```
 
-Quit any already-running copy before reopening after a rebuild, so macOS does not reuse the old process.
-
-To launch the existing build without rebuilding, run `./bin/helloOpenCv.app/Contents/MacOS/helloOpenCv` from this directory.
+`make dev` only quits the interactive instance; headless renders keep running.
+App output goes to `obj/app.log`.
 
 ## Controls
 
-- Press `1`–`5` to select a video.
+- Press `1`–`6` to select a video (`6` selects Flower).
 - Press Left or Right to cycle through motion threshold, inverted traces, displacement map, displaced video, and original video.
 - Press Up or Down to adjust the frame offset.
 - Press `F` to switch between source frame rate and 60 FPS.
 - Click a float field, type a value, then press Enter to apply it; press Esc to cancel.
 - A positive trail speed factor makes higher-speed pixels leave shorter trails; zero preserves the old speed-to-length calculation.
-- Click **Save specs** to append the selected video's current offset, fade, flight strength, and trail speed factor to `bin/data/render-specs.json`.
+- Click **Save specs** to append the current settings and selected layer mode for the selected video to `bin/data/render-specs.json`.
 - The app shows how many specs are saved for the selected video, and each save gets the next `Spec NN` name.
-- The render specs file sets every output to 60 FPS in inverted grayscale mode.
-- Press `R` to render every saved spec for every video into its own numbered folder. Each spec writes trace, displacement-map, and displaced-video frame sequences. Rendering is not started when the app opens.
+- Saved specs render at 60 FPS and retain their selected mode.
 
 ## Displacement maps
 
@@ -35,20 +32,36 @@ Channel values of 128 are neutral, values above 128 move one direction, and valu
 Blue stores displacement magnitude for inspection or masking.
 The **Displaced video** layer applies the map to the original video with edge replication and decaying frame feedback for smearing.
 Flight strength controls how far the map pushes pixels, and pixel fade controls how quickly old motion vectors and image feedback fade.
-Batch output is written under `bin/data/renders/inverted-motion-trails/frames/<video>/spec-NN/displacement-map` and `displaced-video`.
+To render the map itself, save a spec with the displacement map layer selected.
 
-## Prepared render settings
+## Render queue
 
-| Video | Offset | Fade (% / frame) | Flight strength | Trail speed factor |
-| --- | ---: | ---: | ---: | ---: |
-| Cercany Spec 01 | 3 | 2.50 | 1000 | 0.15 |
-| Cercany Spec 02 | 60 | 2.50 | 1000 | 0.15 |
-| Cercany Spec 03 | 60 | 30 | -20 | 0.15 |
-| Daegu Spec 01 | 3 | 100 | -1 | 0.15 |
-| Korea Spec 01 | 3 | 75 | -50 | 0.15 |
-| Meagan Spec 01 | 15 | 100 | -50 | 0.15 |
-| Meagan Spec 02 | 15 | 98 | -0.2 | 0.15 |
-| Meagan Spec 03 | 15 | 60 | -50 | 0.15 |
-| Meagan Spec 04 | 15 | 99 | -0.01 | 0.15 |
-| Norway Spec 01 | 1 | 99 | -1 | 0.15 |
-| Norway Spec 02 | 3 | 100 | -0.02 | 0.15 |
+`bin/data/render-specs.json` is the editable render queue.
+Only videos and specs listed in that file are rendered; videos omitted from it are skipped.
+Clicking **Save specs** appends only the current settings for the selected video and preserves the rest of the queue.
+Remove a spec or a video entry from the JSON to keep it out of the next render.
+
+## Render
+
+Render every queued spec to MP4 without opening a window:
+
+```sh
+make render
+```
+
+The command rebuilds first, reads the JSON at start, and renders several specs at once.
+Each spec's frames are piped straight into ffmpeg (libx264, CRF 18, yuv420p), the same encode as the earlier videos; no PNG frames are written.
+The video shows the layer named by the spec's `mode`.
+Each run writes to a new `bin/data/renders/inverted-motion-trails/video/<timestamp>/` folder, as `<video>-spec-NN.mp4`, next to a copy of the `render-specs.json` it used.
+A video is written as `.partial.mp4` and only renamed when ffmpeg finishes, so a finished name always means a complete file.
+`ffmpeg` must be on `PATH`.
+In a terminal, a live table shows each spec's progress, frame rate and time left, plus a total; when output is redirected to a file, plain progress lines are written instead.
+
+Options:
+
+- `ONLY=korea` renders one video; `ONLY=korea/2` renders one spec.
+- `FRAMES=120` stops each spec after 120 output frames, for quick previews.
+- `PARALLEL=6` sets how many specs render at once; the default is a third of the CPU cores.
+- `OUT=/some/dir` writes the videos into that directory instead of a timestamped folder.
+
+The trace simulation only runs when the inverted grayscale layer is shown or rendered, because no other layer reads it.
