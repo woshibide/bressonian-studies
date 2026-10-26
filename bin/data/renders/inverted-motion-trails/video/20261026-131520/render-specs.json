@@ -1,0 +1,56 @@
+{
+    "version": 1,
+    "videos": [
+        {
+            "input": "fps-normalized/daegu-native-cadence.mp4",
+            "source": "Daegu",
+            "specs": [
+                {
+                    "boids": false,
+                    "colouredParticles": true,
+                    "fadePercent": 2.0,
+                    "flightStrength": 0.5,
+                    "fps": 60.0,
+                    "frameOffset": 2,
+                    "mode": "displacedVideo",
+                    "name": "Spec 01",
+                    "particlesOnly": false,
+                    "trailSpeedFactor": 0.05000000074505806,
+                    "treatment": "streak"
+                },
+                {
+                    "boids": true,
+                    "colouredParticles": true,
+                    "fadePercent": 2.0,
+                    "flightStrength": 0.5,
+                    "fps": 60.0,
+                    "frameOffset": 2,
+                    "mode": "displacedVideo",
+                    "name": "Spec 02",
+                    "particlesOnly": false,
+                    "trailSpeedFactor": 0.05000000074505806,
+                    "treatment": "streak"
+                }
+            ]
+        },
+        {
+            "input": "fps-normalized/meagan-native-cadence.mp4",
+            "source": "Meagan",
+            "specs": [
+                {
+                    "boids": false,
+                    "colouredParticles": false,
+                    "fadePercent": 2.5,
+                    "flightStrength": 1.0,
+                    "fps": 60.0,
+                    "frameOffset": 9,
+                    "mode": "displacedVideo",
+                    "name": "Spec 01",
+                    "particlesOnly": false,
+                    "trailSpeedFactor": 0.15000000596046448,
+                    "treatment": "smear"
+                }
+            ]
+        }
+    ]
+}

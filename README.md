@@ -15,7 +15,10 @@ App output goes to `obj/app.log`.
 
 ## Controls
 
-- Press `1`–`6` to select a video (`6` selects Flower).
+- Press `[` / `]` to play the previous / next video, wrapping at either end.
+- On startup, the app scans `bin/data/fps-normalized` in filename order and reads each video's FPS from its metadata.
+- Add MP4, MOV, M4V, AVI, MKV, or WebM files to that folder, then run `make dev` to include them.
+- Files with unreadable metadata are skipped and logged in `obj/app.log`.
 - Press Left or Right to cycle through motion threshold, inverted traces, displacement map, displaced video, and original video.
 - Press Up or Down to adjust the frame offset.
 

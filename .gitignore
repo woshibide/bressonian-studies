@@ -1,8 +1,13 @@
 .DS_Store
 /bin/*.app/
 /obj/
-/bin/data/fps-normalized/*.mp4
-/bin/data/renders/**/*.mp4
+# Video media, including source copies and renders, stays local.
+*.[mM][pP]4
+*.[mM][oO][vV]
+*.[mM]4[vV]
+*.[aA][vV][iI]
+*.[mM][kK][vV]
+*.[wW][eE][bB][mM]
 /bin/data/renders/inverted-motion-trails/frames/
 /.vscode/browse.db*
 /.vscode/*.lock

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <csignal>
 #include <cstdio>
@@ -39,9 +40,55 @@ void ofApp::setup() {
     ofSetWindowShape(1100, 720);
     ofSetVerticalSync(false);
 
+    discoverVideos();
     loadRenderSpecs(appDataPath("render-specs.json"));
 
     loadVideo(0);
+}
+
+void ofApp::discoverVideos() {
+    sources.clear();
+    const auto directory = appDataPath("fps-normalized");
+    if (!std::filesystem::is_directory(directory)) {
+        renderStatus = "Video folder missing: " + directory.string();
+        ofLogError("ofApp") << renderStatus;
+        return;
+    }
+
+    std::vector<std::filesystem::path> paths;
+    for (const auto &entry : std::filesystem::directory_iterator(directory)) {
+        const std::string extension = ofToLower(entry.path().extension().string());
+        if (entry.is_regular_file() &&
+            (extension == ".mp4" || extension == ".mov" || extension == ".m4v" ||
+             extension == ".avi" || extension == ".mkv" || extension == ".webm")) {
+            paths.push_back(entry.path());
+        }
+    }
+    std::sort(paths.begin(), paths.end());
+    for (const auto &path : paths) {
+        cv::VideoCapture capture(path.string());
+        const double fps = capture.get(cv::CAP_PROP_FPS);
+        if (!capture.isOpened() || !std::isfinite(fps) || fps <= 0) {
+            ofLogWarning("ofApp") << "Skipping video with unreadable metadata: " << path;
+            continue;
+        }
+        std::string label = path.stem().string();
+        const std::string suffix = "-native-cadence";
+        if (label.size() > suffix.size() &&
+            label.compare(label.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            label.erase(label.size() - suffix.size());
+        }
+        if (!label.empty()) {
+            label[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(label[0])));
+        }
+        sources.push_back({label, "fps-normalized/" + path.filename().string(),
+                           static_cast<float>(fps)});
+        ofLogNotice("ofApp") << "Found video: " << path.filename() << " at " << fps << " FPS";
+    }
+    if (sources.empty()) {
+        renderStatus = "No readable videos in " + directory.string();
+        ofLogWarning("ofApp") << renderStatus;
+    }
 }
 
 void ofApp::loadRenderSpecs(const std::filesystem::path &specsPath) {
@@ -67,12 +114,15 @@ void ofApp::loadRenderSpecs(const std::filesystem::path &specsPath) {
         const std::string source = entry["source"].get<std::string>();
         const auto found = std::find_if(sources.begin(), sources.end(),
                                         [&](const VideoSource &video) {
-                                            return video.label == source;
+                                            return (entry.contains("input") && entry["input"].is_string())
+                                                       ? video.path == entry["input"].get<std::string>()
+                                                       : video.label == source;
                                         });
         if (found == sources.end()) {
             continue;
         }
         const auto index = static_cast<std::size_t>(std::distance(sources.begin(), found));
+        sources[index].label = source;
         auto readSpec = [](const ofJson &sourceSpec, RenderSpec spec) {
             if (sourceSpec.contains("frameOffset") &&
                 sourceSpec["frameOffset"].is_number_integer()) {
@@ -1032,6 +1082,11 @@ void ofApp::draw() {
         }
     }
 
+    if (sources.empty()) {
+        ofDrawBitmapString(renderStatus, 28, 40);
+        return;
+    }
+
     ofSetColor(235);
     std::string layerName;
     switch (layerMode) {
@@ -1068,7 +1123,7 @@ void ofApp::draw() {
     ofDrawBitmapString(traceCount, ofGetWidth() - 320, ofGetHeight() - 158);
     ofSetColor(155);
     drawPixelControls();
-    ofDrawBitmapString("1-6: select video     Left / Right: select layer     Up / Down: offset     F: source / 60 FPS     make render: render queue",
+    ofDrawBitmapString("[ / ]: previous / next video    Left / Right: layer    Up / Down: offset    F: source / 60 FPS",
                        28, ofGetHeight() - 28);
     if (!renderStatus.empty()) {
         ofSetColor(235);
@@ -1125,8 +1180,12 @@ void ofApp::keyPressed(int key) {
         return;
     }
 
-    if (key >= '1' && key <= '6') {
-        loadVideo(static_cast<std::size_t>(key - '1'));
+    if (sources.empty()) {
+        return;
+    }
+    if (key == '[' || key == ']') {
+        loadVideo(key == ']' ? (selectedVideo + 1) % sources.size()
+                             : (selectedVideo + sources.size() - 1) % sources.size());
         return;
     }
 
@@ -1518,6 +1577,7 @@ int ofApp::runRenderCommand(const std::vector<std::string> &args) {
         return 1;
     }
     ofApp queue;
+    queue.discoverVideos();
     queue.loadRenderSpecs(specsPath);
     std::vector<std::pair<std::size_t, std::size_t>> jobs;
     for (std::size_t video = 0; video < queue.renderSpecs.size(); ++video) {
@@ -1624,6 +1684,7 @@ int ofApp::runRenderCommand(const std::vector<std::string> &args) {
                 // Each worker owns a separate processing state, destroyed while its
                 // context is still current so its GL objects are released.
                 ofApp renderer;
+                renderer.sources = queue.sources;
                 renderer.renderSpecs = queue.renderSpecs;
                 for (std::size_t job = nextJob++; job < jobs.size(); job = nextJob++) {
                     RenderProgress &jobProgress = progress[job];

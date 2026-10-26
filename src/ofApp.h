@@ -101,6 +101,7 @@ private:
         float opacity;
     };
 
+    void discoverVideos();
     void loadVideo(std::size_t index);
     void pushSourceFrame(const ofPixels &pixels);
     bool updateMotionFrame();
@@ -126,14 +127,7 @@ private:
                    const std::filesystem::path &outputDirectory, std::size_t maxFrames,
                    RenderProgress &progress);
 
-    std::vector<VideoSource> sources = {
-        {"Cercany", "fps-normalized/cercany-native-cadence.mp4", 15.73f},
-        {"Daegu", "fps-normalized/daegu-native-cadence.mp4", 15.04f},
-        {"Korea", "fps-normalized/korea-native-cadence.mp4", 15.00f},
-        {"Meagan", "fps-normalized/meagan-native-cadence.mp4", 27.59f},
-        {"Norway", "fps-normalized/norway-native-cadence.mp4", 45.44f},
-        {"Flower", "fps-normalized/12860598_960_540_25fps.mp4", 25.00f}
-    };
+    std::vector<VideoSource> sources;
     std::vector<std::vector<RenderSpec>> renderSpecs;
     std::vector<std::size_t> selectedSpecIndices;
     ofVideoPlayer player;
