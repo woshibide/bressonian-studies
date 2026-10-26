@@ -1,0 +1,94 @@
+{
+    "version": 1,
+    "videos": [
+        {
+            "input": "fps-normalized/cercany-native-cadence.mp4",
+            "source": "Cercany",
+            "specs": [
+                {
+                    "boids": true,
+                    "colouredParticles": true,
+                    "fadePercent": 15.0,
+                    "flightStrength": 1.5,
+                    "fps": 60.0,
+                    "frameOffset": 3,
+                    "mode": "displacedVideo",
+                    "name": "Spec 01",
+                    "particlesOnly": false,
+                    "trailSpeedFactor": 5.0,
+                    "treatment": "smear"
+                }
+            ]
+        },
+        {
+            "input": "fps-normalized/daegu-native-cadence.mp4",
+            "source": "Daegu",
+            "specs": [
+                {
+                    "boids": true,
+                    "colouredParticles": true,
+                    "fadePercent": 2.5,
+                    "flightStrength": 2.0,
+                    "fps": 60.0,
+                    "frameOffset": 2,
+                    "mode": "displacedVideo",
+                    "name": "Spec 01",
+                    "particlesOnly": false,
+                    "trailSpeedFactor": 5.0,
+                    "treatment": "streak"
+                },
+                {
+                    "boids": true,
+                    "colouredParticles": true,
+                    "fadePercent": 15.0,
+                    "flightStrength": 8.0,
+                    "fps": 60.0,
+                    "frameOffset": 2,
+                    "mode": "displacedVideo",
+                    "name": "Spec 02",
+                    "particlesOnly": true,
+                    "trailSpeedFactor": 5.0,
+                    "treatment": "streak"
+                }
+            ]
+        },
+        {
+            "input": "fps-normalized/meagan-native-cadence.mp4",
+            "source": "Meagan",
+            "specs": [
+                {
+                    "boids": true,
+                    "colouredParticles": true,
+                    "fadePercent": 30.0,
+                    "flightStrength": 1.5,
+                    "fps": 60.0,
+                    "frameOffset": 8,
+                    "mode": "displacedVideo",
+                    "name": "Spec 01",
+                    "particlesOnly": true,
+                    "trailSpeedFactor": 50.0,
+                    "treatment": "smear"
+                }
+            ]
+        },
+        {
+            "input": "fps-normalized/norway-native-cadence.mp4",
+            "source": "Norway",
+            "specs": [
+                {
+                    "boids": true,
+                    "colouredParticles": true,
+                    "fadePercent": 25.0,
+                    "flightStrength": 2.5,
+                    "fps": 60.0,
+                    "frameOffset": 3,
+                    "mode": "displacedVideo",
+                    "name": "Spec 01",
+                    "particlesOnly": true,
+                    "trailSpeedFactor": 0.15000000596046448,
+                    "treatment": "smear"
+                }
+            ]
+        }
+    ]
+}

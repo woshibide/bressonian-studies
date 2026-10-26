@@ -6,31 +6,17 @@
             "source": "Cercany",
             "specs": [
                 {
-                    "fadePercent": 2.5,
-                    "flightStrength": 1000.0,
+                    "boids": true,
+                    "colouredParticles": true,
+                    "fadePercent": 15.0,
+                    "flightStrength": 1.5,
                     "fps": 60.0,
                     "frameOffset": 3,
-                    "mode": "invertedGrayscale",
+                    "mode": "displacedVideo",
                     "name": "Spec 01",
-                    "trailSpeedFactor": 0.15000000596046448
-                },
-                {
-                    "fadePercent": 2.5,
-                    "flightStrength": 1000.0,
-                    "fps": 60.0,
-                    "frameOffset": 60,
-                    "mode": "invertedGrayscale",
-                    "name": "Spec 02",
-                    "trailSpeedFactor": 0.15000000596046448
-                },
-                {
-                    "fadePercent": 30.0,
-                    "flightStrength": -20.0,
-                    "fps": 60.0,
-                    "frameOffset": 60,
-                    "mode": "invertedGrayscale",
-                    "name": "Spec 03",
-                    "trailSpeedFactor": 0.15000000596046448
+                    "particlesOnly": false,
+                    "trailSpeedFactor": 5.0,
+                    "treatment": "smear"
                 }
             ]
         },
@@ -39,28 +25,30 @@
             "source": "Daegu",
             "specs": [
                 {
-                    "fadePercent": 100.0,
-                    "flightStrength": -1.0,
+                    "boids": true,
+                    "colouredParticles": true,
+                    "fadePercent": 2.5,
+                    "flightStrength": 2.0,
                     "fps": 60.0,
-                    "frameOffset": 3,
-                    "mode": "invertedGrayscale",
+                    "frameOffset": 2,
+                    "mode": "displacedVideo",
                     "name": "Spec 01",
-                    "trailSpeedFactor": 0.15000000596046448
-                }
-            ]
-        },
-        {
-            "input": "fps-normalized/korea-native-cadence.mp4",
-            "source": "Korea",
-            "specs": [
+                    "particlesOnly": false,
+                    "trailSpeedFactor": 5.0,
+                    "treatment": "streak"
+                },
                 {
-                    "fadePercent": 75.0,
-                    "flightStrength": -50.0,
+                    "boids": true,
+                    "colouredParticles": true,
+                    "fadePercent": 15.0,
+                    "flightStrength": 8.0,
                     "fps": 60.0,
-                    "frameOffset": 3,
-                    "mode": "invertedGrayscale",
-                    "name": "Spec 01",
-                    "trailSpeedFactor": 0.15000000596046448
+                    "frameOffset": 2,
+                    "mode": "displacedVideo",
+                    "name": "Spec 02",
+                    "particlesOnly": true,
+                    "trailSpeedFactor": 5.0,
+                    "treatment": "streak"
                 }
             ]
         },
@@ -69,73 +57,17 @@
             "source": "Meagan",
             "specs": [
                 {
-                    "fadePercent": 100.0,
-                    "flightStrength": -50.0,
+                    "boids": true,
+                    "colouredParticles": true,
+                    "fadePercent": 30.0,
+                    "flightStrength": 1.5,
                     "fps": 60.0,
-                    "frameOffset": 15,
-                    "mode": "invertedGrayscale",
+                    "frameOffset": 8,
+                    "mode": "displacedVideo",
                     "name": "Spec 01",
-                    "trailSpeedFactor": 0.15000000596046448
-                },
-                {
-                    "fadePercent": 98.0,
-                    "flightStrength": -0.20000000298023224,
-                    "fps": 60.0,
-                    "frameOffset": 15,
-                    "mode": "invertedGrayscale",
-                    "name": "Spec 02",
-                    "trailSpeedFactor": 0.15000000596046448
-                },
-                {
-                    "fadePercent": 60.0,
-                    "flightStrength": -50.0,
-                    "fps": 60.0,
-                    "frameOffset": 15,
-                    "mode": "invertedGrayscale",
-                    "name": "Spec 03",
-                    "trailSpeedFactor": 0.15000000596046448
-                },
-                {
-                    "fadePercent": 99.0,
-                    "flightStrength": -0.009999999776482582,
-                    "fps": 60.0,
-                    "frameOffset": 15,
-                    "mode": "invertedGrayscale",
-                    "name": "Spec 04",
-                    "trailSpeedFactor": 0.15000000596046448
-                }
-            ]
-        },
-        {
-            "input": "fps-normalized/norway-native-cadence.mp4",
-            "source": "Norway",
-            "specs": [
-                {
-                    "fadePercent": 99.0,
-                    "flightStrength": -1.0,
-                    "fps": 60.0,
-                    "frameOffset": 1,
-                    "mode": "invertedGrayscale",
-                    "name": "Spec 01",
-                    "trailSpeedFactor": 0.15000000596046448
-                },
-                {
-                    "fadePercent": 100.0,
-                    "flightStrength": -0.019999999552965164,
-                    "fps": 60.0,
-                    "frameOffset": 3,
-                    "mode": "invertedGrayscale",
-                    "name": "Spec 02",
-                    "trailSpeedFactor": 0.15000000596046448
-                },
-                {
-                    "fadePercent": 100.0,
-                    "flightStrength": -0.019999999552965164,
-                    "fps": 60.0,
-                    "frameOffset": 3,
-                    "mode": "invertedGrayscale",
-                    "name": "Spec 03",
-                    "trailSpeedFactor": 0.15000000596046448
+                    "particlesOnly": true,
+                    "trailSpeedFactor": 50.0,
+                    "treatment": "smear"
                 }
             ]
         }
