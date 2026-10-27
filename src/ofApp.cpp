@@ -64,6 +64,7 @@ InteractiveSettings ofApp::currentSettings() const {
     settings.polygonGate = polygonGate;
     settings.polygonDetail = polygonDetail;
     settings.objectCutout = objectCutout;
+    settings.speedContrast = speedContrast;
     settings.useSixtyFps = useSixtyFps;
     return settings;
 }
@@ -125,6 +126,7 @@ void ofApp::applySettings(const InteractiveSettings &settings) {
     polygonGate = settings.polygonGate;
     polygonDetail = settings.polygonDetail;
     objectCutout = settings.objectCutout;
+    speedContrast = settings.speedContrast;
     useSixtyFps = settings.useSixtyFps;
     if (resetHistory) sourceFrameHistory.clear();
     if (resetEffect) {
@@ -296,6 +298,7 @@ bool ofApp::loadRenderSpecs(const std::filesystem::path &specsPath) {
             spec.polygonGate = sourceSpec.value("polygonGate", false);
             spec.polygonDetail = sourceSpec.value("polygonDetail", 0.0f);
             spec.objectCutout = sourceSpec.value("objectCutout", false);
+            spec.speedContrast = sourceSpec.value("speedContrast", 0.0f);
             std::map<std::string, std::string> tuning;
             for (auto it = sourceSpec.begin(); it != sourceSpec.end(); ++it)
                 if (BoidSettings::isKey(it.key())) tuning[it.key()] = it.value().dump();
@@ -414,6 +417,7 @@ bool ofApp::saveRenderSpecs() {
     spec.polygonGate = polygonGate;
     spec.polygonDetail = polygonDetail;
     spec.objectCutout = objectCutout;
+    spec.speedContrast = speedContrast;
     // Append to the complete disk document, including unavailable videos and custom names.
     auto &videos = document["videos"];
     auto found = std::find_if(videos.begin(), videos.end(), [&](const ofJson &video) {
@@ -434,7 +438,7 @@ bool ofApp::saveRenderSpecs() {
         {"colouredParticles", spec.colouredParticles}, {"particlesOnly", spec.particlesOnly},
         {"boids", spec.boids}, {"hysteresisThresholding", spec.hysteresisThresholding},
         {"polygonGate", spec.polygonGate}, {"polygonDetail", spec.polygonDetail},
-        {"objectCutout", spec.objectCutout},
+        {"objectCutout", spec.objectCutout}, {"speedContrast", spec.speedContrast},
         {"boidCellSize", spec.boidTuning.boidCellSize},
         {"boidAlignment", spec.boidTuning.boidAlignment},
         {"boidCohesion", spec.boidTuning.boidCohesion},
@@ -983,6 +987,17 @@ void ofApp::updateTravellingPixels(const cv::Mat &grayscale, const cv::Mat &curr
             length = streakLength(traveller);
         } else {
             colour = traveller.colour;
+            if (speedContrast > 0.0f) {
+                // Contrast stretch: faster particles push each channel further from mid grey,
+                // compressing their colours toward the extremes, and relax as they slow.
+                const float speed = std::hypot(traveller.velocityX, traveller.velocityY) *
+                                    std::abs(pixelFlightStrength);
+                const float gain = 1.0f + speedContrast * speed;
+                for (int channel = 0; channel < 3; ++channel) {
+                    colour[channel] =
+                        cv::saturate_cast<unsigned char>((colour[channel] - 128.0f) * gain + 128.0f);
+                }
+            }
             if (drawMap) {
                 const float offsetX = std::clamp(traveller.x - traveller.originX,
                                                  -maxMapOffset, maxMapOffset);
@@ -1446,6 +1461,8 @@ void ofApp::keyPressed(int key) {
                         pixelFlightStrength = enteredValue;
                     } else if (editingFloatInput == FloatInput::PolygonDetail) {
                         polygonDetail = std::clamp(enteredValue, 0.0f, 100.0f);
+                    } else if (editingFloatInput == FloatInput::SpeedContrast) {
+                        speedContrast = std::clamp(enteredValue, 0.0f, 100.0f);
                     } else {
                         trailSpeedFactor = enteredValue;
                     }
@@ -1534,6 +1551,7 @@ void ofApp::drawPixelControls() {
     fadeValueField.set(205, y + 2, 95, 27);
     flightStrengthField.set(440, y + 2, 95, 27);
     trailSpeedFactorField.set(700, y + 2, 105, 27);
+    speedContrastField.set(205, y - 33, 95, 27);
     saveSpecsButton.set(850, y + 2, 125, 27);
     treatmentField.set(205, y + 37, 125, 27);
     particlesToggle.set(345, y + 37, 230, 27);
@@ -1542,6 +1560,7 @@ void ofApp::drawPixelControls() {
 
     ofSetColor(235);
     ofDrawBitmapString("Pixel fade (% / frame)", 28, y + 20);
+    ofDrawBitmapString("Speed contrast", 28, y - 15);
     ofDrawBitmapString("Flight strength", 320, y + 20);
     ofDrawBitmapString("Trail speed factor", 540, y + 20);
     ofDrawBitmapString("Pixel treatment", 28, y + 55);
@@ -1573,6 +1592,13 @@ void ofApp::drawPixelControls() {
               editingFloatInput == FloatInput::FlightStrength);
     drawField(trailSpeedFactorField, trailSpeedFactorValue,
               editingFloatInput == FloatInput::TrailSpeedFactor);
+    drawField(speedContrastField,
+              editingFloatInput == FloatInput::SpeedContrast ? floatInputText
+                                                             : ofToString(speedContrast, 2),
+              editingFloatInput == FloatInput::SpeedContrast);
+    ofSetColor(155);
+    ofDrawBitmapString("0-100; coloured particles gain contrast with speed (0 = off)",
+                       speedContrastField.getRight() + 15, speedContrastField.y + 18);
     drawField(treatmentField, pixelTreatmentName(pixelTreatment), treatmentMenuOpen);
     ofSetColor(235);
     ofDrawTriangle(treatmentField.getRight() - 18, treatmentField.y + 11,
@@ -1714,6 +1740,8 @@ void ofApp::mousePressed(int x, int y, int button) {
         editingFloatInput = FloatInput::FlightStrength;
     } else if (trailSpeedFactorField.inside(x, y)) {
         editingFloatInput = FloatInput::TrailSpeedFactor;
+    } else if (speedContrastField.inside(x, y)) {
+        editingFloatInput = FloatInput::SpeedContrast;
     } else {
         editingFloatInput = FloatInput::None;
     }
@@ -1746,6 +1774,7 @@ bool ofApp::renderJob(std::size_t videoIndex, std::size_t specIndex,
     polygonGate = spec.polygonGate;
     polygonDetail = spec.polygonDetail;
     objectCutout = spec.objectCutout;
+    speedContrast = spec.speedContrast;
     resetForeground();
     motionMaskPixels.clear();
     sourceFrameHistory.clear();

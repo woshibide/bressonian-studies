@@ -28,6 +28,7 @@ struct InteractiveSettings {
     bool polygonGate = false;
     float polygonDetail = 0.0f;
     bool objectCutout = false;
+    float speedContrast = 0.0f;
         BoidSettings boidTuning;
 
     static std::string read(const std::string &path, std::size_t limit = 65536) {
@@ -74,7 +75,8 @@ struct InteractiveSettings {
                 key != "mode" && key != "treatment" && key != "colouredParticles" &&
                 key != "particlesOnly" && key != "boids" && key != "useSixtyFps" &&
                 key != "hysteresisThresholding" && key != "polygonGate" &&
-                key != "polygonDetail" && key != "objectCutout") {
+                key != "polygonDetail" && key != "objectCutout" &&
+                key != "speedContrast") {
                 fail("unknown key '" + key + "'");
             }
             if (!values.emplace(key, value).second) fail("duplicate key '" + key + "'");
@@ -134,6 +136,8 @@ struct InteractiveSettings {
             result.polygonDetail = static_cast<float>(number("polygonDetail", 0, 100, false));
         if (values.count("objectCutout"))
             result.objectCutout = boolean("objectCutout");
+        if (values.count("speedContrast"))
+            result.speedContrast = static_cast<float>(number("speedContrast", 0, 100, false));
         return result;
     }
 
@@ -154,7 +158,8 @@ struct InteractiveSettings {
             << "hysteresisThresholding = " << hysteresisThresholding << '\n'
             << "polygonGate = " << polygonGate << '\n'
             << "polygonDetail = " << polygonDetail << '\n'
-            << "objectCutout = " << objectCutout << '\n';
+            << "objectCutout = " << objectCutout << '\n'
+            << "speedContrast = " << speedContrast << '\n';
         return out.str();
     }
 };
@@ -220,6 +225,7 @@ struct InteractiveConfig {
         result.global.emplace("polygonGate", "false");
         result.global.emplace("polygonDetail", "0");
         result.global.emplace("objectCutout", "false");
+        result.global.emplace("speedContrast", "0");
         for (const auto &entry : result.overrides) {
             try { result.resolve(entry.first); }
             catch (const std::exception &error) { throw std::runtime_error("[" + entry.first + "]: " + error.what()); }

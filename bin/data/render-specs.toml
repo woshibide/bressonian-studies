@@ -123,3 +123,32 @@ polygonDetail = 100.0
 polygonGate = false
 trailSpeedFactor = 0.009999999776482582
 treatment = "stretch"
+
+[[videos]]
+input = "fps-normalized/korea-native-cadence.mp4"
+source = "Korea"
+
+[[videos.specs]]
+boidAlignment = 0.800000011920929
+boidCellSize = 16
+boidCohesion = 0.4000000059604645
+boidCrowdCount = 24.0
+boidSeparation = 0.10000000149011612
+boidSwirl = 0.10000000149011612
+boidSwirlDirection = -1.0
+boids = true
+colouredParticles = true
+fadePercent = 3.5
+flightStrength = 1.0
+fps = 60.0
+frameOffset = 3
+hysteresisThresholding = true
+mode = "displacedVideo"
+name = "Spec 01"
+objectCutout = true
+particlesOnly = false
+polygonDetail = 100.0
+polygonGate = true
+speedContrast = 0.009999999776482582
+trailSpeedFactor = 0.15000000596046448
+treatment = "smear"

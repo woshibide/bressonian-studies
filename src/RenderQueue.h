@@ -32,7 +32,7 @@ inline void validate(const ofJson &document) {
         throw std::runtime_error("expected version = 1 and [[videos]] entries");
     for (auto it = document.begin(); it != document.end(); ++it)
         if (it.key() != "version" && it.key() != "videos") throw std::runtime_error("unknown queue key: " + it.key());
-    const std::set<std::string> numbers = {"fadePercent", "flightStrength", "fps", "trailSpeedFactor", "polygonDetail"};
+    const std::set<std::string> numbers = {"fadePercent", "flightStrength", "fps", "trailSpeedFactor", "polygonDetail", "speedContrast"};
     const std::set<std::string> booleans = {"boids", "colouredParticles", "particlesOnly", "hysteresisThresholding", "polygonGate", "objectCutout"};
     for (const auto &video : document.at("videos")) {
         if (!video.is_object() || !video.contains("source") || !video.at("source").is_string())
@@ -63,7 +63,7 @@ inline void validate(const ofJson &document) {
                     valid = value.is_number() && std::isfinite(value.get<double>()) && std::abs(value.get<double>()) <= std::numeric_limits<float>::max();
                     if (valid && key == "fps") valid = value.get<double>() > 0;
                     if (valid && (key == "fadePercent" || key == "trailSpeedFactor")) valid = value.get<double>() >= 0;
-                    if (valid && key == "polygonDetail") valid = value.get<double>() >= 0 && value.get<double>() <= 100;
+                    if (valid && (key == "polygonDetail" || key == "speedContrast")) valid = value.get<double>() >= 0 && value.get<double>() <= 100;
                     if (valid && key == "fadePercent") valid = value.get<double>() <= 100;
                 } else if (booleans.count(key)) valid = value.is_boolean();
                 else if (key == "frameOffset") valid = value.is_number_integer() && value.get<double>() >= 0 && value.get<double>() <= 120;

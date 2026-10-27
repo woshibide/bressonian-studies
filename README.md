@@ -24,7 +24,7 @@ Click **Save config** to explicitly write the current controls to `settings.toml
 
 The dependency-free parser supports a **narrow TOML subset, not full TOML**: one scalar `key = value` per line, blank lines, `#` comments, decimal numbers (including exponents), lowercase booleans, and double-quoted enum names without escapes. Use `2.5`, not the C++ literal `2.5f`; suffixes are invalid TOML. Unknown/duplicate keys or tables, arrays of scalar values, dotted/quoted keys, single-quoted/multiline strings, numeric separators and non-decimal numbers are rejected.
 
-`[global]` requires the ten original keys below; `hysteresisThresholding`, `polygonGate` and `objectCutout` are optional and default to `false` when absent; `polygonDetail` is optional and defaults to `0`. They are supported in `[global]` and per-mode overrides. Optional `[motionMask]`, `[motionPolygons]`, `[invertedGrayscale]`, `[displacementMap]`, `[displacedVideo]` and `[originalVideo]` tables override any keys except `mode`, which belongs only in `[global]`. Every override is validated against the complete globals before anything is applied, including modes not currently selected. The optional `[boids]` table holds shared tuning for all modes; its seven keys are not allowed in `[global]` or per-mode overrides. The existing `boids` boolean in `[global]` and per-mode tables remains the enable switch. Legacy complete flat settings are still accepted; Save config writes tables.
+`[global]` requires the ten original keys below; `hysteresisThresholding`, `polygonGate` and `objectCutout` are optional and default to `false` when absent; `polygonDetail` and `speedContrast` are optional and default to `0`. They are supported in `[global]` and per-mode overrides. Optional `[motionMask]`, `[motionPolygons]`, `[invertedGrayscale]`, `[displacementMap]`, `[displacedVideo]` and `[originalVideo]` tables override any keys except `mode`, which belongs only in `[global]`. Every override is validated against the complete globals before anything is applied, including modes not currently selected. The optional `[boids]` table holds shared tuning for all modes; its seven keys are not allowed in `[global]` or per-mode overrides. The existing `boids` boolean in `[global]` and per-mode tables remains the enable switch. Legacy complete flat settings are still accepted; Save config writes tables.
 
 ```toml
 [global]
@@ -42,6 +42,7 @@ hysteresisThresholding = false
 polygonGate = false
 polygonDetail = 0
 objectCutout = false
+speedContrast = 0
 
 [boids]
 boidCellSize = 16
@@ -70,7 +71,7 @@ Switching layers resolves that mode's globals plus overrides. UI edits are remem
 | `treatment` | `"smear"`, `"streak"`, `"stretch"` |
 | `colouredParticles`, `particlesOnly`, `boids`, `useSixtyFps` | `true` or `false` |
 | `hysteresisThresholding`, `polygonGate`, `objectCutout` | Optional `true` or `false`; default to `false` |
-| `polygonDetail` | Optional finite number, 0–100; defaults to `0` |
+| `polygonDetail`, `speedContrast` | Optional finite number, 0–100; defaults to `0` |
 
 Shared `[boids]` tuning accepts the following optional keys. Missing keys, or a missing table, use the original defaults shown here. Numeric values must be finite.
 
@@ -154,6 +155,10 @@ The displacement map shows each particle's travel since it started, using the sa
 Saved specs store the toggle as `colouredParticles`, and specs without it use the field.
 The **Particles only** toggle works with coloured particles and puts the displaced video on black, so only the flying pixels and their own smear paint show.
 Saved specs store it as `particlesOnly`.
+The **Speed contrast** field (`speedContrast`, 0–100) contrast-stretches each coloured particle by its current speed.
+Every channel moves away from mid grey by a gain of `1 + speedContrast * speed`, where speed is in pixels per output frame including flight strength, and clips at 0 and 255.
+Fast particles therefore compress toward vivid, saturated extremes, and relax back to their source colour as they slow.
+It applies to coloured particles on the displaced video, not to grayscale traces or the displacement map colours. 0 turns it off; around 0.3 is already strong.
 
 The **Boids** toggle makes travelling pixels flock: they turn toward their neighbours' heading and centre, away from crowded spots, and swirl around their neighbours' centre.
 Boids only turn travellers, so their speed still decays with the frame offset half-life and offset 0 still shows no effect.
@@ -205,9 +210,10 @@ hysteresisThresholding = false
 polygonGate = false
 polygonDetail = 0
 objectCutout = false
+speedContrast = 0
 ```
 
-Spec fields are optional for historical compatibility: defaults are the example above except `fadePercent = 15`. The optional booleans `hysteresisThresholding`, `polygonGate` and `objectCutout` default to `false` and `polygonDetail` (0–100) defaults to `0` for existing specs; `true` enables the same shared motion gate steps described above. `name` is preserved metadata; CLI selection and filenames use queue position. Render `trailSpeedFactor` accepts finite nonnegative values, including existing values above the interactive limit of 100. `flightStrength` accepts any finite float, `fps` must be positive, `fadePercent` is 0–100 and `frameOffset` is an integer 0–120. Modes, treatments and booleans use the same choices as above. The seven optional boid tuning fields are flat keys in each `[[videos.specs]]`, not a `[boids]` table; they use the same types and ranges as the interactive tuning table. Each omitted tuning field uses its original default above, independently of interactive settings and other specs. **Save specs** captures all seven values even when `boids = false`; the boolean remains the enable switch. Queue strings additionally accept JSON-compatible double-quoted escapes (for paths/names); other TOML string forms remain unsupported. Unknown fields are rejected rather than silently discarded. Validation covers the entire queue, including unavailable videos; a malformed queue aborts rendering or Save specs with an error.
+Spec fields are optional for historical compatibility: defaults are the example above except `fadePercent = 15`. The optional booleans `hysteresisThresholding`, `polygonGate` and `objectCutout` default to `false` and `polygonDetail` and `speedContrast` (0–100) default to `0` for existing specs; `true` enables the same shared motion gate steps described above. `name` is preserved metadata; CLI selection and filenames use queue position. Render `trailSpeedFactor` accepts finite nonnegative values, including existing values above the interactive limit of 100. `flightStrength` accepts any finite float, `fps` must be positive, `fadePercent` is 0–100 and `frameOffset` is an integer 0–120. Modes, treatments and booleans use the same choices as above. The seven optional boid tuning fields are flat keys in each `[[videos.specs]]`, not a `[boids]` table; they use the same types and ranges as the interactive tuning table. Each omitted tuning field uses its original default above, independently of interactive settings and other specs. **Save specs** captures all seven values even when `boids = false`; the boolean remains the enable switch. Queue strings additionally accept JSON-compatible double-quoted escapes (for paths/names); other TOML string forms remain unsupported. Unknown fields are rejected rather than silently discarded. Validation covers the entire queue, including unavailable videos; a malformed queue aborts rendering or Save specs with an error.
 
 When a requested `.toml` queue is absent, the app looks for the same basename with `.json`, validates and converts it to TOML, and retains the original unchanged. This also supports the historical single-spec video shape. Existing TOML always wins, even when invalid: there is no fallback to stale JSON. Save specs re-reads the complete queue and atomically replaces it after appending, preserving every existing entry, field, custom name and ordering, including unavailable videos. Comments and formatting are normalized. Render runs archive the TOML queue next to their output.
 

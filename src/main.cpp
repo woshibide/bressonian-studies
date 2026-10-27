@@ -28,13 +28,13 @@ int main(int argc, char *argv[]) {
 
     ofGLFWWindowSettings settings;
     settings.setGLVersion(2, 1);
-    settings.setSize(1100, 400);
+    settings.setSize(1100, 440);
     settings.setPosition(glm::vec2(30, 40));
     settings.windowMode = OF_WINDOW;
     auto controls = ofCreateWindow(settings);
 
     settings.setSize(960, 540);
-    settings.setPosition(glm::vec2(180, 470));
+    settings.setPosition(glm::vec2(180, 510));
     settings.shareContextWith = controls;
     auto video = ofCreateWindow(settings);
 

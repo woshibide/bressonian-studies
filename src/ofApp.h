@@ -50,7 +50,8 @@ private:
         PixelFade,
         FlightStrength,
         TrailSpeedFactor,
-        PolygonDetail
+        PolygonDetail,
+        SpeedContrast
     };
 
     struct VideoSource {
@@ -74,6 +75,7 @@ private:
         bool polygonGate = false;
         float polygonDetail = 0.0f;
         bool objectCutout = false;
+        float speedContrast = 0.0f;
         BoidSettings boidTuning;
     };
 
@@ -207,6 +209,9 @@ private:
     ofRectangle fadeValueField;
     ofRectangle flightStrengthField;
     ofRectangle trailSpeedFactorField;
+    ofRectangle speedContrastField;
+    // Coloured particles stretch their colour away from mid grey by 1 + this * speed.
+    float speedContrast = 0.0f;
     ofRectangle saveSpecsButton;
     ofRectangle treatmentField;
     bool treatmentMenuOpen = false;
