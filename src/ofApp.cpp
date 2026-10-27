@@ -3,6 +3,7 @@
 
 #include "ofApp.h"
 #include "ParticleTuning.h"
+#include "RenderQueue.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -36,14 +37,148 @@ of::filesystem::path appDataPath(const of::filesystem::path &relativePath) {
 } // namespace
 
 void ofApp::setup() {
-    ofSetWindowTitle("CCTV Motion Difference");
-    ofSetWindowShape(1100, 720);
-    ofSetVerticalSync(false);
+    processingWindow = ofGetWindowPtr();
+    ofSetWindowTitle("CCTV Controls");
+    ofSetVerticalSync(true);
 
     discoverVideos();
-    loadRenderSpecs(appDataPath("render-specs.json"));
+    loadRenderSpecs(appDataPath("render-specs.toml"));
 
     loadVideo(0);
+    reloadSettings(true);
+}
+
+InteractiveSettings ofApp::currentSettings() const {
+    InteractiveSettings settings;
+    settings.frameOffset = frameOffset;
+    settings.pixelFadePercent = pixelFadePercent;
+    settings.pixelFlightStrength = pixelFlightStrength;
+    settings.trailSpeedFactor = trailSpeedFactor;
+    settings.mode = layerModeName();
+    settings.treatment = pixelTreatmentName(pixelTreatment);
+    settings.colouredParticles = colouredParticles;
+    settings.particlesOnly = particlesOnly;
+    settings.boids = boids;
+    settings.boidTuning = boidTuning;
+    settings.hysteresisThresholding = hysteresisThresholding;
+    settings.polygonGate = polygonGate;
+    settings.polygonDetail = polygonDetail;
+    settings.objectCutout = objectCutout;
+    settings.useSixtyFps = useSixtyFps;
+    return settings;
+}
+
+void ofApp::reloadSettings(bool force) {
+    const double now = ofGetElapsedTimef();
+    if (!force && now < nextSettingsPoll) return;
+    nextSettingsPoll = now + 0.25;
+    try {
+        const std::string text = InteractiveSettings::read(appDataPath("settings.toml").string());
+        if (!force && settingsObserved && text == observedSettingsText) {
+            settingsPending = false;
+            return;
+        }
+        // Require unchanged contents on consecutive polls, including atomic editor saves.
+        if (!force && (!settingsPending || text != pendingSettingsText)) {
+            pendingSettingsText = text;
+            settingsPending = true;
+            return;
+        }
+        observedSettingsText = text;
+        settingsObserved = true;
+        settingsPending = false;
+        const auto config = InteractiveConfig::parse(text);
+        const auto settings = config.resolve(config.selectedMode());
+        interactiveConfig = config;
+        sessionSettings.clear();
+        applySettings(settings);
+        settingsStatus = "Loaded. Live reload active; UI edits are unsaved until Save config.";
+        ofLogNotice("settings") << settingsStatus;
+    } catch (const std::exception &error) {
+        const std::string message = std::string("ERROR: ") + error.what() +
+            "\nFix bin/data/settings.toml; keeping current values.";
+        if (settingsStatus != message) ofLogError("settings") << message;
+        settingsStatus = message;
+    }
+}
+
+void ofApp::applySettings(const InteractiveSettings &settings) {
+    const bool resetHistory = frameOffset != settings.frameOffset;
+    const bool resetEffect = resetHistory || layerModeName() != settings.mode ||
+        pixelTreatmentName(pixelTreatment) != settings.treatment ||
+        colouredParticles != settings.colouredParticles || particlesOnly != settings.particlesOnly ||
+        hysteresisThresholding != settings.hysteresisThresholding ||
+        polygonGate != settings.polygonGate || objectCutout != settings.objectCutout;
+    // A model that learned while the cutout was off would start from a stale background.
+    if (objectCutout != settings.objectCutout) resetForeground();
+    frameOffset = settings.frameOffset;
+    pixelFadePercent = settings.pixelFadePercent;
+    pixelFlightStrength = settings.pixelFlightStrength;
+    trailSpeedFactor = settings.trailSpeedFactor;
+    layerMode = layerModeFromName(settings.mode);
+    pixelTreatment = pixelTreatmentFromName(settings.treatment);
+    colouredParticles = settings.colouredParticles;
+    particlesOnly = settings.particlesOnly;
+    boids = settings.boids;
+    boidTuning = settings.boidTuning;
+    hysteresisThresholding = settings.hysteresisThresholding;
+    polygonGate = settings.polygonGate;
+    polygonDetail = settings.polygonDetail;
+    objectCutout = settings.objectCutout;
+    useSixtyFps = settings.useSixtyFps;
+    if (resetHistory) sourceFrameHistory.clear();
+    if (resetEffect) {
+        hasProcessedFrame = false;
+        invertedLayerInitialized = false;
+        travellingPixels.clear();
+    }
+    editingFloatInput = FloatInput::None;
+    treatmentMenuOpen = false;
+    applyTargetFrameRate();
+}
+
+void ofApp::saveSettings() {
+    const auto path = appDataPath("settings.toml");
+    const auto temporary = path.string() + ".tmp-" + std::to_string(getpid());
+    try {
+        // Do not clobber an external edit that has not yet been presented to the user.
+        const std::string disk = InteractiveSettings::read(path.string());
+        if (!settingsObserved || settingsPending || disk != observedSettingsText) {
+            settingsStatus = "Save refused: external edit pending. Wait for reload, review, then Save config.";
+            return;
+        }
+        auto config = InteractiveConfig::parse(disk);
+        config.capture(currentSettings());
+        const std::string text = config.serialize();
+        InteractiveConfig::parse(text);
+        {
+            std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+            output << text;
+            output.close();
+            if (!output) throw std::runtime_error("cannot write temporary settings file");
+        }
+        if (InteractiveSettings::read(path.string()) != disk)
+            throw std::runtime_error("file changed during save; review external edit and retry");
+        std::filesystem::rename(temporary, path);
+        observedSettingsText = text;
+        interactiveConfig = config;
+        settingsStatus = "Saved current controls to bin/data/settings.toml.";
+    } catch (const std::exception &error) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        settingsStatus = std::string("Save failed: ") + error.what();
+    }
+}
+
+void ofApp::exit() {
+    if (processingWindow) {
+        processingWindow->makeCurrent();
+        player.close();
+        processedTexture.clear();
+        originalTexture.clear();
+        particleCanvas.clear();
+    }
+    ofExit();
 }
 
 void ofApp::discoverVideos() {
@@ -91,20 +226,16 @@ void ofApp::discoverVideos() {
     }
 }
 
-void ofApp::loadRenderSpecs(const std::filesystem::path &specsPath) {
+bool ofApp::loadRenderSpecs(const std::filesystem::path &specsPath) {
+    ofJson document;
+    try { document = renderQueue::load(specsPath); }
+    catch (const std::exception &error) {
+        renderStatus = "Render queue error: " + std::string(error.what());
+        ofLogError("render") << specsPath << ": " << renderStatus;
+        return false;
+    }
     renderSpecs.assign(sources.size(), {});
     selectedSpecIndices.assign(sources.size(), 0);
-
-    if (!std::filesystem::exists(specsPath)) {
-        return;
-    }
-
-    const ofJson document = ofLoadJson(specsPath);
-    if (!document.is_object() ||
-        !document.contains("videos") || !document["videos"].is_array()) {
-        ofLogError("ofApp") << "Could not read render specs: " << specsPath;
-        return;
-    }
 
     for (const auto &entry : document["videos"]) {
         if (!entry.is_object() || !entry.contains("source") ||
@@ -161,6 +292,14 @@ void ofApp::loadRenderSpecs(const std::filesystem::path &specsPath) {
             if (sourceSpec.contains("boids") && sourceSpec["boids"].is_boolean()) {
                 spec.boids = sourceSpec["boids"].get<bool>();
             }
+            spec.hysteresisThresholding = sourceSpec.value("hysteresisThresholding", false);
+            spec.polygonGate = sourceSpec.value("polygonGate", false);
+            spec.polygonDetail = sourceSpec.value("polygonDetail", 0.0f);
+            spec.objectCutout = sourceSpec.value("objectCutout", false);
+            std::map<std::string, std::string> tuning;
+            for (auto it = sourceSpec.begin(); it != sourceSpec.end(); ++it)
+                if (BoidSettings::isKey(it.key())) tuning[it.key()] = it.value().dump();
+            spec.boidTuning = BoidSettings::parse(tuning);
             return spec;
         };
 
@@ -177,6 +316,7 @@ void ofApp::loadRenderSpecs(const std::filesystem::path &specsPath) {
             selectedSpecIndices[index] = renderSpecs[index].size() - 1;
         }
     }
+    return true;
 }
 
 std::size_t ofApp::savedSpecCount(std::size_t videoIndex) const {
@@ -186,6 +326,9 @@ std::size_t ofApp::savedSpecCount(std::size_t videoIndex) const {
 ofApp::LayerMode ofApp::layerModeFromName(const std::string &name) const {
     if (name == "motionMask") {
         return LayerMode::MotionMask;
+    }
+    if (name == "motionPolygons") {
+        return LayerMode::MotionPolygons;
     }
     if (name == "displacementMap") {
         return LayerMode::DisplacementMap;
@@ -225,6 +368,8 @@ std::string ofApp::layerModeName() const {
     switch (layerMode) {
     case LayerMode::MotionMask:
         return "motionMask";
+    case LayerMode::MotionPolygons:
+        return "motionPolygons";
     case LayerMode::DisplacementMap:
         return "displacementMap";
     case LayerMode::DisplacedVideo:
@@ -242,8 +387,16 @@ bool ofApp::saveRenderSpecs() {
         return false;
     }
 
-    // Preserve queue edits made directly to the JSON since the app was opened.
-    loadRenderSpecs(appDataPath("render-specs.json"));
+    const auto specsPath = appDataPath("render-specs.toml");
+    ofJson document;
+    std::string disk;
+    try {
+        document = renderQueue::load(specsPath);
+        if (std::filesystem::exists(specsPath)) disk = InteractiveSettings::read(specsPath.string(), 16 * 1024 * 1024);
+    } catch (const std::exception &error) {
+        renderStatus = "Save specs refused: " + std::string(error.what());
+        return false;
+    }
 
     RenderSpec spec;
     spec.frameOffset = frameOffset;
@@ -256,48 +409,49 @@ bool ofApp::saveRenderSpecs() {
     spec.colouredParticles = colouredParticles;
     spec.particlesOnly = particlesOnly;
     spec.boids = boids;
-    renderSpecs[selectedVideo].push_back(spec);
-    selectedSpecIndices[selectedVideo] = renderSpecs[selectedVideo].size() - 1;
-
-    ofJson document;
-    document["version"] = 1;
-    document["videos"] = ofJson::array();
-    for (std::size_t index = 0; index < sources.size(); ++index) {
-        if (renderSpecs[index].empty()) {
-            continue;
-        }
-        ofJson savedSpecs = ofJson::array();
-        for (std::size_t specIndex = 0; specIndex < renderSpecs[index].size(); ++specIndex) {
-            const RenderSpec &entry = renderSpecs[index][specIndex];
-            savedSpecs.push_back({
-                {"name", "Spec " + ofToString(specIndex + 1, 2, '0')},
-                {"fps", entry.fps},
-                {"mode", entry.mode},
-                {"frameOffset", entry.frameOffset},
-                {"fadePercent", entry.fadePercent},
-                {"flightStrength", entry.flightStrength},
-                {"trailSpeedFactor", entry.trailSpeedFactor},
-                {"treatment", entry.treatment},
-                {"colouredParticles", entry.colouredParticles},
-                {"particlesOnly", entry.particlesOnly},
-                {"boids", entry.boids}
-            });
-        }
-        document["videos"].push_back({
-            {"source", sources[index].label},
-            {"input", sources[index].path},
-            {"specs", savedSpecs}
-        });
+    spec.boidTuning = boidTuning;
+    spec.hysteresisThresholding = hysteresisThresholding;
+    spec.polygonGate = polygonGate;
+    spec.polygonDetail = polygonDetail;
+    spec.objectCutout = objectCutout;
+    // Append to the complete disk document, including unavailable videos and custom names.
+    auto &videos = document["videos"];
+    auto found = std::find_if(videos.begin(), videos.end(), [&](const ofJson &video) {
+        return video.contains("input") ? video["input"] == sources[selectedVideo].path
+                                       : video["source"] == sources[selectedVideo].label;
+    });
+    if (found == videos.end()) {
+        videos.push_back({{"source", sources[selectedVideo].label},
+                          {"input", sources[selectedVideo].path}, {"specs", ofJson::array()}});
+        found = videos.end() - 1;
     }
-
-    const auto specsPath = appDataPath("render-specs.json");
-    std::filesystem::create_directories(specsPath.parent_path());
-    if (!ofSavePrettyJson(specsPath, document)) {
-        renderSpecs[selectedVideo].pop_back();
-        selectedSpecIndices[selectedVideo] = renderSpecs[selectedVideo].size() - 1;
-        renderStatus = "Could not save render specs";
+    auto &specs = (*found)["specs"];
+    specs.push_back({
+        {"name", "Spec " + ofToString(specs.size() + 1, 2, '0')},
+        {"fps", spec.fps}, {"mode", spec.mode}, {"frameOffset", spec.frameOffset},
+        {"fadePercent", spec.fadePercent}, {"flightStrength", spec.flightStrength},
+        {"trailSpeedFactor", spec.trailSpeedFactor}, {"treatment", spec.treatment},
+        {"colouredParticles", spec.colouredParticles}, {"particlesOnly", spec.particlesOnly},
+        {"boids", spec.boids}, {"hysteresisThresholding", spec.hysteresisThresholding},
+        {"polygonGate", spec.polygonGate}, {"polygonDetail", spec.polygonDetail},
+        {"objectCutout", spec.objectCutout},
+        {"boidCellSize", spec.boidTuning.boidCellSize},
+        {"boidAlignment", spec.boidTuning.boidAlignment},
+        {"boidCohesion", spec.boidTuning.boidCohesion},
+        {"boidSeparation", spec.boidTuning.boidSeparation},
+        {"boidCrowdCount", spec.boidTuning.boidCrowdCount},
+        {"boidSwirl", spec.boidTuning.boidSwirl},
+        {"boidSwirlDirection", spec.boidTuning.boidSwirlDirection}
+    });
+    try {
+        if (std::filesystem::exists(specsPath) ? InteractiveSettings::read(specsPath.string(), 16 * 1024 * 1024) != disk : !disk.empty())
+            throw std::runtime_error("queue changed during save; retry");
+        renderQueue::save(specsPath, document);
+    } catch (const std::exception &error) {
+        renderStatus = "Save specs failed: " + std::string(error.what());
         return false;
     }
+    if (!loadRenderSpecs(specsPath)) return false;
     renderStatus = "Saved spec " + ofToString(renderSpecs[selectedVideo].size()) +
                    " for " + sources[selectedVideo].label;
     return true;
@@ -318,34 +472,14 @@ void ofApp::loadVideo(std::size_t index) {
     displacedVideoPixels.clear();
     displacementField.release();
     travellingPixels.clear();
+    resetForeground();
     hasLatestVideoFrame = false;
     hasProcessedFrame = false;
     invertedLayerInitialized = false;
     selectedVideo = index;
-    if (renderSpecs.size() == sources.size() && !renderSpecs[index].empty()) {
-        selectedSpecIndices[index] = renderSpecs[index].size() - 1;
-        const RenderSpec &spec = renderSpecs[index][selectedSpecIndices[index]];
-        frameOffset = spec.frameOffset;
-        pixelFadePercent = spec.fadePercent;
-        pixelFlightStrength = spec.flightStrength;
-        trailSpeedFactor = spec.trailSpeedFactor;
-        layerMode = layerModeFromName(spec.mode);
-        pixelTreatment = pixelTreatmentFromName(spec.treatment);
-        colouredParticles = spec.colouredParticles;
-        particlesOnly = spec.particlesOnly;
-        boids = spec.boids;
-    } else {
-        const RenderSpec defaults;
-        selectedSpecIndices[index] = 0;
-        frameOffset = defaults.frameOffset;
-        pixelFadePercent = defaults.fadePercent;
-        pixelFlightStrength = defaults.flightStrength;
-        trailSpeedFactor = defaults.trailSpeedFactor;
-        pixelTreatment = pixelTreatmentFromName(defaults.treatment);
-        colouredParticles = defaults.colouredParticles;
-        particlesOnly = defaults.particlesOnly;
-        boids = defaults.boids;
-    }
+    // Interactive settings persist across videos; the TOML queue is only for renders.
+    selectedSpecIndices[index] = renderSpecs[index].empty() ? 0 : renderSpecs[index].size() - 1;
+    originalTexture.clear();
     applyTargetFrameRate();
 
     player.setPixelFormat(OF_PIXELS_RGB);
@@ -363,6 +497,7 @@ float ofApp::targetFrameRate(std::size_t index) const {
 }
 
 void ofApp::applyTargetFrameRate() {
+    if (sources.empty()) return;
     ofSetFrameRate(static_cast<int>(std::lround(targetFrameRate(selectedVideo))));
     motionSpreadTicks = std::max(
         1, static_cast<int>(std::lround(targetFrameRate(selectedVideo) /
@@ -374,6 +509,9 @@ float ofApp::fadeFactor() const {
 }
 
 void ofApp::update() {
+    // Only this window owns playback, simulation, uploads and ParticleCanvas FBOs.
+    processingWindow->makeCurrent();
+    reloadSettings();
     player.update();
     const bool sourceFrameChanged = player.isLoaded() && player.isFrameNew();
     if (sourceFrameChanged) {
@@ -382,6 +520,8 @@ void ofApp::update() {
             return;
         }
         latestVideoFrame = pixels;
+        originalTexture.loadData(pixels);
+        glFinish(); // Publish uploads before the other context samples the shared texture.
         hasLatestVideoFrame = true;
     }
 
@@ -394,7 +534,7 @@ void ofApp::update() {
         pushSourceFrame(pixels);
     }
 
-    if (layerMode == LayerMode::MotionMask) {
+    if (layerMode == LayerMode::MotionMask || layerMode == LayerMode::MotionPolygons) {
         if (updateMotionFrame()) {
             uploadProcessedPixels(motionMaskPixels);
         }
@@ -410,6 +550,101 @@ void ofApp::pushSourceFrame(const ofPixels &pixels) {
     while (sourceFrameHistory.size() > static_cast<std::size_t>(frameOffset + 1)) {
         sourceFrameHistory.pop_front();
     }
+    // The model learns once per source frame, so repeated output frames do not skew it.
+    if (objectCutout) updateForeground(pixels);
+}
+
+void ofApp::updateForeground(const ofPixels &pixels) {
+    const int width = static_cast<int>(pixels.getWidth());
+    const int height = static_cast<int>(pixels.getHeight());
+    cv::Mat frame(height, width, CV_8UC3, const_cast<unsigned char *>(pixels.getData()));
+    // Model at most 960 pixels wide for speed; the mask is scaled back to source size.
+    const double scale = std::min(1.0, 960.0 / width);
+    cv::Mat modelFrame = frame;
+    if (scale < 1.0) cv::resize(frame, modelFrame, cv::Size(), scale, scale, cv::INTER_AREA);
+    if (!backgroundModel) {
+        // OpenCV defaults: 500 frames of history, variance threshold 16, shadows marked 127.
+        backgroundModel = cv::createBackgroundSubtractorMOG2(500, 16.0, true);
+    }
+    cv::Mat modelMask;
+    backgroundModel->apply(modelFrame, modelMask);
+    cv::resize(modelMask, foregroundMask, frame.size(), 0, 0, cv::INTER_NEAREST);
+}
+
+void ofApp::resetForeground() {
+    backgroundModel.release();
+    foregroundMask.release();
+}
+
+cv::Mat ofApp::thresholdMotion(const cv::Mat &grayscaleDifference) const {
+    constexpr int highThreshold = 24;
+    cv::Mat strong;
+    cv::threshold(grayscaleDifference, strong, highThreshold, 255, cv::THRESH_BINARY);
+    if (!hysteresisThresholding) return strong;
+
+    constexpr int lowThreshold = 12;
+    cv::Mat weak;
+    cv::threshold(grayscaleDifference, weak, lowThreshold, 255, cv::THRESH_BINARY);
+    cv::Mat labels;
+    // Match scikit-image's default 2D connectivity: shared edges, not diagonals.
+    const int componentCount = cv::connectedComponents(weak, labels, 4, CV_32S);
+    std::vector<unsigned char> seeded(componentCount, 0);
+    for (int y = 0; y < strong.rows; ++y) {
+        const auto *strongRow = strong.ptr<unsigned char>(y);
+        const auto *labelRow = labels.ptr<int>(y);
+        for (int x = 0; x < strong.cols; ++x) {
+            if (strongRow[x]) seeded[labelRow[x]] = 255;
+        }
+    }
+    cv::Mat result(strong.size(), CV_8UC1);
+    for (int y = 0; y < result.rows; ++y) {
+        auto *outputRow = result.ptr<unsigned char>(y);
+        const auto *labelRow = labels.ptr<int>(y);
+        for (int x = 0; x < result.cols; ++x) outputRow[x] = seeded[labelRow[x]];
+    }
+    return result;
+}
+
+std::vector<std::vector<cv::Point>> ofApp::traceMotionPolygons(const cv::Mat &motionMask) const {
+    // Detail 0 uses the coarse values below; 100 scales them to zero.
+    const double coarseness = 1.0 - std::clamp(polygonDetail, 0.0f, 100.0f) / 100.0;
+    // Close small gaps so fragments of one moving body merge before their outline is traced.
+    const int closeSize = static_cast<int>(std::lround(motionMask.cols / 60.0 * coarseness)) | 1;
+    cv::Mat closed = motionMask;
+    if (closeSize > 1) {
+        cv::morphologyEx(motionMask, closed, cv::MORPH_CLOSE,
+                         cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(closeSize, closeSize)));
+    }
+    std::vector<std::vector<cv::Point>> contours;
+    // Outer outlines only, so holes inside a moving region are filled with it.
+    cv::findContours(closed, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    // Regions under 0.05% of the frame are noise, not moving bodies.
+    const double minArea = motionMask.total() * 0.0005 * coarseness;
+    std::vector<std::vector<cv::Point>> polygons;
+    for (const auto &contour : contours) {
+        if (cv::contourArea(contour) < minArea) continue;
+        std::vector<cv::Point> polygon;
+        // Straight edges that stay within 1.5% of the outline's length from it.
+        cv::approxPolyDP(contour, polygon,
+                         0.015 * coarseness * cv::arcLength(contour, true), true);
+        polygons.push_back(std::move(polygon));
+    }
+    return polygons;
+}
+
+cv::Mat ofApp::motionGate(const cv::Mat &grayscaleDifference) const {
+    cv::Mat gate = thresholdMotion(grayscaleDifference);
+    if (polygonGate) {
+        const auto polygons = traceMotionPolygons(gate);
+        gate.setTo(0);
+        if (!polygons.empty()) cv::fillPoly(gate, polygons, cv::Scalar(255));
+    }
+    if (objectCutout && foregroundMask.size() == gate.size()) {
+        // The difference covers the object then and now plus its shadow; the model keeps
+        // only the object as it is in the current frame.
+        cv::bitwise_and(gate, foregroundMask == 255, gate);
+    }
+    return gate;
 }
 
 bool ofApp::updateMotionFrame() {
@@ -438,17 +673,51 @@ bool ofApp::updateMotionFrame() {
                          const_cast<unsigned char *>(delayed.getData()));
     cv::Mat difference;
     cv::Mat grayscaleDifference;
-    cv::Mat motionMask;
-    cv::Mat binaryDifference;
+    cv::Mat layer;
     cv::absdiff(currentFrame, delayedFrame, difference);
     cv::cvtColor(difference, grayscaleDifference, cv::COLOR_RGB2GRAY);
-    cv::threshold(grayscaleDifference, motionMask, 24, 255, cv::THRESH_BINARY);
-    cv::cvtColor(motionMask, binaryDifference, cv::COLOR_GRAY2RGB);
+    if (layerMode == LayerMode::MotionPolygons) {
+        // Dimmed source, thresholded pixels in grey and their polygons on top. The polygons
+        // are filled only while the polygon gate feeds them to the effects. With the object
+        // cutout, the gated region instead shows the object in source colour and its shadow
+        // in violet.
+        const cv::Mat motionMask = thresholdMotion(grayscaleDifference);
+        const auto polygons = traceMotionPolygons(motionMask);
+        const cv::Scalar outline = polygonGate ? cv::Scalar(255, 190, 40) : cv::Scalar(90, 200, 255);
+        const int thickness = std::max(1, width / 480);
+        const bool showCutout = objectCutout && foregroundMask.size() == motionMask.size();
+        currentFrame.convertTo(layer, -1, 0.35);
+        if (showCutout) {
+            cv::Mat region = motionMask;
+            if (polygonGate) {
+                region = cv::Mat::zeros(motionMask.size(), CV_8UC1);
+                if (!polygons.empty()) cv::fillPoly(region, polygons, cv::Scalar(255));
+            }
+            currentFrame.copyTo(layer, region & (foregroundMask == 255));
+            layer.setTo(cv::Scalar(170, 90, 255), region & (foregroundMask == 127));
+        } else {
+            layer.setTo(cv::Scalar(150, 150, 150), motionMask);
+        }
+        if (polygonGate && !showCutout && !polygons.empty()) {
+            cv::Mat filled = layer.clone();
+            cv::fillPoly(filled, polygons, outline);
+            cv::addWeighted(filled, 0.3, layer, 0.7, 0.0, layer);
+        }
+        cv::polylines(layer, polygons, true, outline, thickness, cv::LINE_AA);
+        for (const auto &polygon : polygons) {
+            // Dots mark corners of coarse polygons; on detailed outlines they would merge into blobs.
+            if (cv::arcLength(polygon, true) < polygon.size() * thickness * 8.0) continue;
+            for (const auto &vertex : polygon) {
+                cv::circle(layer, vertex, thickness * 2, outline, cv::FILLED, cv::LINE_AA);
+            }
+        }
+    } else {
+        cv::cvtColor(motionGate(grayscaleDifference), layer, cv::COLOR_GRAY2RGB);
+    }
 
     ofPixels output;
     output.allocate(width, height, OF_PIXELS_RGB);
-    std::memcpy(output.getData(), binaryDifference.data,
-                binaryDifference.total() * binaryDifference.elemSize());
+    std::memcpy(output.getData(), layer.data, layer.total() * layer.elemSize());
     motionMaskPixels = output;
     return true;
 }
@@ -529,7 +798,7 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
         cv::Mat grayscaleDifference;
         cv::absdiff(currentFrame, previousFrame, difference);
         cv::cvtColor(difference, grayscaleDifference, cv::COLOR_RGB2GRAY);
-        cv::threshold(grayscaleDifference, movingPixels, 24, 255, cv::THRESH_BINARY);
+        movingPixels = motionGate(grayscaleDifference);
         cv::cvtColor(previousFrame, previousGrayscale, cv::COLOR_RGB2GRAY);
         const cv::Size flowSize(std::max(1, width / 2), std::max(1, height / 2));
         cv::resize(previousGrayscale, previousFlowFrame, flowSize, 0, 0, cv::INTER_AREA);
@@ -762,7 +1031,7 @@ void ofApp::updateTravellingPixels(const cv::Mat &grayscale, const cv::Mat &curr
         double headingX = 0.0;
         double headingY = 0.0;
     };
-    const int cellSize = particleTuning::boidCellSize;
+    const int cellSize = boidTuning.boidCellSize;
     const int gridColumns = (width + cellSize - 1) / cellSize;
     const int gridRows = (height + cellSize - 1) / cellSize;
     auto cellIndex = [&](float x, float y) {
@@ -873,9 +1142,9 @@ void ofApp::updateTravellingPixels(const cv::Mat &grayscale, const cv::Mat &curr
         const float flockHeadingLength = static_cast<float>(
             std::hypot(neighbourhood.headingX, neighbourhood.headingY));
         if (flockHeadingLength > 1e-6f) {
-            turnX += particleTuning::boidAlignment *
+            turnX += boidTuning.boidAlignment *
                      (static_cast<float>(neighbourhood.headingX) / flockHeadingLength - headingX);
-            turnY += particleTuning::boidAlignment *
+            turnY += boidTuning.boidAlignment *
                      (static_cast<float>(neighbourhood.headingY) / flockHeadingLength - headingY);
         }
 
@@ -885,25 +1154,25 @@ void ofApp::updateTravellingPixels(const cv::Mat &grayscale, const cv::Mat &curr
             static_cast<float>(neighbourhood.sumY / neighbourhood.count) - traveller.y;
         const float centreDistance = std::hypot(toCentreX, toCentreY);
         if (centreDistance > 1e-3f) {
-            const float pull = particleTuning::boidCohesion *
+            const float pull = boidTuning.boidCohesion *
                                std::min(centreDistance / static_cast<float>(cellSize), 1.0f);
             turnX += pull * toCentreX / centreDistance;
             turnY += pull * toCentreY / centreDistance;
             // Clockwise on screen, where y points down.
-            const float swirl = particleTuning::boidSwirl * particleTuning::boidSwirlDirection;
+            const float swirl = boidTuning.boidSwirl * boidTuning.boidSwirlDirection;
             turnX += swirl * toCentreY / centreDistance;
             turnY -= swirl * toCentreX / centreDistance;
         }
 
         const BoidCell cell = sampleGrid(cells, traveller.x, traveller.y);
         const float crowding = std::clamp(
-            static_cast<float>(cell.count) / particleTuning::boidCrowdCount - 1.0f, 0.0f, 1.0f);
+            static_cast<float>(cell.count) / boidTuning.boidCrowdCount - 1.0f, 0.0f, 1.0f);
         if (crowding > 0.0f && cell.count > 0.0) {
             const float awayX = traveller.x - static_cast<float>(cell.sumX / cell.count);
             const float awayY = traveller.y - static_cast<float>(cell.sumY / cell.count);
             const float awayDistance = std::hypot(awayX, awayY);
             if (awayDistance > 1e-3f) {
-                const float push = particleTuning::boidSeparation * crowding;
+                const float push = boidTuning.boidSeparation * crowding;
                 turnX += push * awayX / awayDistance;
                 turnY += push * awayY / awayDistance;
             }
@@ -1056,15 +1325,16 @@ void ofApp::uploadProcessedPixels(const ofPixels &pixels) {
         processedTexture.allocate(width, height, GL_RGB);
     }
     processedTexture.loadData(pixels);
+    glFinish();
     hasProcessedFrame = true;
 }
 
-void ofApp::draw() {
-    ofBackground(12, 14, 18);
+void ofApp::drawVideo() {
+    ofBackground(0);
     ofSetColor(255);
 
-    const float maxWidth = ofGetWidth() - 80;
-    const float maxHeight = ofGetHeight() - 275;
+    const float maxWidth = ofGetWidth();
+    const float maxHeight = ofGetHeight();
     const float videoWidth = player.isLoaded() ? player.getWidth() : 0;
     const float videoHeight = player.isLoaded() ? player.getHeight() : 0;
 
@@ -1073,39 +1343,67 @@ void ofApp::draw() {
         const float drawWidth = videoWidth * scale;
         const float drawHeight = videoHeight * scale;
         const float x = (ofGetWidth() - drawWidth) * 0.5f;
-        const float y = 28 + (maxHeight - drawHeight) * 0.5f;
+        const float y = (maxHeight - drawHeight) * 0.5f;
 
         if (layerMode == LayerMode::OriginalVideo) {
-            player.draw(x, y, drawWidth, drawHeight);
+            if (originalTexture.isAllocated()) originalTexture.draw(x, y, drawWidth, drawHeight);
         } else if (hasProcessedFrame) {
             processedTexture.draw(x, y, drawWidth, drawHeight);
         }
     }
+    // Finish reads before the processing context can replace the shared image.
+    glFinish();
+}
+
+void ofApp::draw() {
+    ofBackground(12, 14, 18);
+    ofSetColor(235);
+    saveConfigButton.set(28, 55, 140, 27);
+    ofDrawRectangle(saveConfigButton);
+    ofSetColor(12, 14, 18);
+    ofDrawBitmapString("Save config", 48, 74);
+    ofSetColor(235);
+    ofDrawBitmapString("settings.toml: " + settingsStatus, 28, 104);
+    hysteresisToggle.set(28, 155, 275, 27);
+    ofSetColor(hysteresisThresholding ? ofColor(72, 95, 115) : ofColor(38, 42, 48));
+    ofDrawRectangle(hysteresisToggle);
+    ofSetColor(235);
+    ofDrawBitmapString(std::string(hysteresisThresholding ? "[x]" : "[ ]") +
+                           " Hysteresis thresholding", 35, 173);
+    polygonGateToggle.set(318, 155, 275, 27);
+    ofSetColor(polygonGate ? ofColor(72, 95, 115) : ofColor(38, 42, 48));
+    ofDrawRectangle(polygonGateToggle);
+    ofSetColor(235);
+    ofDrawBitmapString(std::string(polygonGate ? "[x]" : "[ ]") + " Polygon gate", 325, 173);
+    ofDrawBitmapString("Polygon detail", 610, 173);
+    polygonDetailField.set(735, 155, 95, 27);
+    const bool editingDetail = editingFloatInput == FloatInput::PolygonDetail;
+    ofSetColor(editingDetail ? ofColor(72, 95, 115) : ofColor(38, 42, 48));
+    ofDrawRectangle(polygonDetailField);
+    ofNoFill();
+    ofSetColor(115, 125, 138);
+    ofDrawRectangle(polygonDetailField);
+    ofFill();
+    ofSetColor(235);
+    ofDrawBitmapString(editingDetail ? floatInputText : ofToString(polygonDetail, 2),
+                       polygonDetailField.x + 7, polygonDetailField.y + 18);
+    ofSetColor(155);
+    ofDrawBitmapString("0-100", polygonDetailField.getRight() + 10, 173);
+    objectCutoutToggle.set(890, 155, 180, 27);
+    ofSetColor(objectCutout ? ofColor(72, 95, 115) : ofColor(38, 42, 48));
+    ofDrawRectangle(objectCutoutToggle);
+    ofSetColor(235);
+    ofDrawBitmapString(std::string(objectCutout ? "[x]" : "[ ]") + " Object cutout", 897, 173);
+    ofSetColor(235);
 
     if (sources.empty()) {
-        ofDrawBitmapString(renderStatus, 28, 40);
+        ofDrawBitmapString(renderStatus, 28, 135);
         return;
     }
 
     ofSetColor(235);
-    std::string layerName;
-    switch (layerMode) {
-    case LayerMode::MotionMask:
-        layerName = "Motion threshold";
-        break;
-    case LayerMode::InvertedGrayscale:
-        layerName = "Inverted grayscale, travelling pixel traces";
-        break;
-    case LayerMode::DisplacementMap:
-        layerName = "Displacement map (R=X, G=Y, 128=neutral)";
-        break;
-    case LayerMode::DisplacedVideo:
-        layerName = "Displaced original video";
-        break;
-    case LayerMode::OriginalVideo:
-        layerName = "Original video";
-        break;
-    }
+    const std::string layerName = layerModeName();
+    const std::string videoName = std::filesystem::path(sources[selectedVideo].path).filename().string();
     const std::string fpsLabel = useSixtyFps
                                      ? "60 FPS"
                                      : "Source FPS " + ofToString(sources[selectedVideo].averageFps, 2);
@@ -1114,7 +1412,7 @@ void ofApp::draw() {
     if (travellingPixels.size() >= maxTravellers) {
         traceCount += " FULL";
     }
-    ofDrawBitmapString("" + ofToString(selectedVideo + 1) + "  " + sources[selectedVideo].label +
+    ofDrawBitmapString("" + ofToString(selectedVideo + 1) + "  " + videoName +
                            "   |   " + layerName + "   |   Offset: " +
                            ofToString(frameOffset) + " frames   |   " + fpsLabel +
                            "   |   Saved specs: " +
@@ -1134,6 +1432,7 @@ void ofApp::draw() {
 }
 
 void ofApp::keyPressed(int key) {
+    processingWindow->makeCurrent();
     if (editingFloatInput != FloatInput::None) {
         if (key == OF_KEY_RETURN) {
             if (!floatInputText.empty()) {
@@ -1145,6 +1444,8 @@ void ofApp::keyPressed(int key) {
                         pixelFadePercent = enteredValue;
                     } else if (editingFloatInput == FloatInput::FlightStrength) {
                         pixelFlightStrength = enteredValue;
+                    } else if (editingFloatInput == FloatInput::PolygonDetail) {
+                        polygonDetail = std::clamp(enteredValue, 0.0f, 100.0f);
                     } else {
                         trailSpeedFactor = enteredValue;
                     }
@@ -1190,11 +1491,17 @@ void ofApp::keyPressed(int key) {
     }
 
     if (key == OF_KEY_LEFT || key == OF_KEY_RIGHT) {
-        const int layerCount = 5;
+        const int layerCount = 6;
         const int currentLayer = static_cast<int>(layerMode);
         const int direction = key == OF_KEY_RIGHT ? 1 : -1;
         const int nextLayer = (currentLayer + direction + layerCount) % layerCount;
+        sessionSettings[layerModeName()] = currentSettings();
         layerMode = static_cast<LayerMode>(nextLayer);
+        const auto mode = layerModeName();
+        const auto saved = sessionSettings.find(mode);
+        if (!interactiveConfig.global.empty()) {
+            applySettings(saved == sessionSettings.end() ? interactiveConfig.resolve(mode) : saved->second);
+        }
         hasProcessedFrame = false;
         if (layerMode == LayerMode::InvertedGrayscale ||
             layerMode == LayerMode::DisplacementMap ||
@@ -1324,9 +1631,38 @@ void ofApp::drawTreatmentMenu() {
 }
 
 void ofApp::mousePressed(int x, int y, int button) {
+    processingWindow->makeCurrent();
     if (button != OF_MOUSE_BUTTON_LEFT) {
         return;
     }
+    if (saveConfigButton.inside(x, y)) {
+        saveSettings();
+        return;
+    }
+    if (hysteresisToggle.inside(x, y)) {
+        auto settings = currentSettings();
+        settings.hysteresisThresholding = !settings.hysteresisThresholding;
+        applySettings(settings);
+        return;
+    }
+    if (polygonDetailField.inside(x, y)) {
+        editingFloatInput = FloatInput::PolygonDetail;
+        floatInputText.clear();
+        return;
+    }
+    if (objectCutoutToggle.inside(x, y)) {
+        auto settings = currentSettings();
+        settings.objectCutout = !settings.objectCutout;
+        applySettings(settings);
+        return;
+    }
+    if (polygonGateToggle.inside(x, y)) {
+        auto settings = currentSettings();
+        settings.polygonGate = !settings.polygonGate;
+        applySettings(settings);
+        return;
+    }
+    if (sources.empty()) return;
     if (treatmentMenuOpen) {
         const PixelTreatment options[] = {PixelTreatment::Smear, PixelTreatment::Streak,
                                           PixelTreatment::Stretch};
@@ -1405,6 +1741,12 @@ bool ofApp::renderJob(std::size_t videoIndex, std::size_t specIndex,
     colouredParticles = spec.colouredParticles;
     particlesOnly = spec.particlesOnly;
     boids = spec.boids;
+    boidTuning = spec.boidTuning;
+    hysteresisThresholding = spec.hysteresisThresholding;
+    polygonGate = spec.polygonGate;
+    polygonDetail = spec.polygonDetail;
+    objectCutout = spec.objectCutout;
+    resetForeground();
     motionMaskPixels.clear();
     sourceFrameHistory.clear();
     accumulatedInvertedFrame.clear();
@@ -1476,14 +1818,14 @@ bool ofApp::renderJob(std::size_t videoIndex, std::size_t specIndex,
                 pushSourceFrame(sourceFrame);
             }
             // Same layer routing as update(): only the layers that use it pay for optical flow.
-            if (layerMode == LayerMode::MotionMask) {
+            if (layerMode == LayerMode::MotionMask || layerMode == LayerMode::MotionPolygons) {
                 updateMotionFrame();
             } else if (layerMode != LayerMode::OriginalVideo) {
                 updateInvertedFrame(sourceFrame, tick == 0);
             }
 
             const ofPixels *output = &accumulatedInvertedFrame;
-            if (layerMode == LayerMode::MotionMask) {
+            if (layerMode == LayerMode::MotionMask || layerMode == LayerMode::MotionPolygons) {
                 output = &motionMaskPixels;
             } else if (layerMode == LayerMode::DisplacementMap) {
                 output = &displacementMapPixels;
@@ -1525,7 +1867,7 @@ int ofApp::runRenderCommand(const std::vector<std::string> &args) {
     const unsigned int cores = std::max(1u, std::thread::hardware_concurrency());
     std::size_t jobCount = std::max(1u, cores / 3);
     std::size_t maxFrames = 0;
-    std::filesystem::path specsPath = appDataPath("render-specs.json");
+    std::filesystem::path specsPath = appDataPath("render-specs.toml");
     // Each run gets its own folder, so earlier videos are never overwritten.
     std::filesystem::path outputDirectory =
         appDataPath("renders/inverted-motion-trails/video/" +
@@ -1535,7 +1877,7 @@ int ofApp::runRenderCommand(const std::vector<std::string> &args) {
     auto usage = []() {
         ofLogError("render")
             << "usage: helloOpenCv --render [--jobs N] [--frames N] [--only video[/spec]]"
-               " [--specs file.json] [--out directory]";
+               " [--specs file.toml] [--out directory]";
         return 2;
     };
     auto parseCount = [](const std::string &text, std::size_t &value) {
@@ -1572,13 +1914,9 @@ int ofApp::runRenderCommand(const std::vector<std::string> &args) {
         }
     }
 
-    if (!std::filesystem::exists(specsPath)) {
-        ofLogError("render") << "render queue not found: " << specsPath;
-        return 1;
-    }
     ofApp queue;
     queue.discoverVideos();
-    queue.loadRenderSpecs(specsPath);
+    if (!queue.loadRenderSpecs(specsPath)) return 1;
     std::vector<std::pair<std::size_t, std::size_t>> jobs;
     for (std::size_t video = 0; video < queue.renderSpecs.size(); ++video) {
         for (std::size_t spec = 0; spec < queue.renderSpecs[video].size(); ++spec) {
@@ -1596,7 +1934,7 @@ int ofApp::runRenderCommand(const std::vector<std::string> &args) {
 
     // Keep the queue next to the videos so the run can be reproduced.
     std::filesystem::create_directories(outputDirectory);
-    std::filesystem::copy_file(specsPath, outputDirectory / "render-specs.json",
+    std::filesystem::copy_file(specsPath, outputDirectory / "render-specs.toml",
                                std::filesystem::copy_options::overwrite_existing);
 
     std::vector<RenderProgress> progress(jobs.size());

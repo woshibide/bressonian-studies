@@ -1,0 +1,33 @@
+# Interactive settings only. Render jobs use the separate render-specs.toml queue.
+# Global defaults with per-mode overrides; see README.md.
+# Numbers use TOML syntax: 2.5 is valid; the C++ suffix in 2.5f is not.
+
+[global]
+frameOffset = 3
+pixelFadePercent = 3.5 # its better if i will be writting actual .cpp values like 2.5f and etc
+pixelFlightStrength = 1.0
+trailSpeedFactor = 0.15
+mode = "motionMask"
+treatment = "smear"
+colouredParticles = false
+particlesOnly = false
+boids = false
+useSixtyFps = false
+hysteresisThresholding = false
+
+# Overrides apply only while this layer mode is selected.
+[motionMask]
+frameOffset = 5
+pixelFadePercent = 2.5
+treatment = "streak"
+
+
+# Shared flock tuning; enable with boids = true in [global] or a mode table.
+[boids]
+boidCellSize = 16 # Neighbour grid size in pixels; each traveller samples a 3x3 neighbourhood.
+boidAlignment = 0.8 # Turn toward neighbours' average heading.
+boidCohesion = 0.4 # Turn toward neighbours' centre.
+boidSeparation = 0.10 # Turn away from crowded cells.
+boidCrowdCount = 24.0 # Separation starts above this many travellers per cell.
+boidSwirl = 0.1 # Turn sideways around neighbours' centre.
+boidSwirlDirection = -1.0 # 1 or -1 reverses the swirl.

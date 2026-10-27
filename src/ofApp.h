@@ -1,8 +1,10 @@
 #pragma once
 
 #include "ParticleCanvas.h"
+#include "InteractiveSettings.h"
 #include "ofMain.h"
 #include <opencv2/core.hpp>
+#include <opencv2/video/background_segm.hpp>
 
 #include <atomic>
 #include <deque>
@@ -16,15 +18,20 @@ public:
     void setup() override;
     void update() override;
     void draw() override;
+    void exit() override;
+    // Presentation only; called by the second window, never advances simulation.
+    void drawVideo();
     void keyPressed(int key) override;
     void mousePressed(int x, int y, int button) override;
 
-    // Renders the JSON queue without a window; returns the process exit code.
+    // Renders the TOML queue without a window; returns the process exit code.
     static int runRenderCommand(const std::vector<std::string> &args);
 
 private:
     enum class LayerMode {
         MotionMask,
+        // Visualises the polygon gate over the source; sits between the mask and the effects.
+        MotionPolygons,
         InvertedGrayscale,
         DisplacementMap,
         DisplacedVideo,
@@ -42,7 +49,8 @@ private:
         None,
         PixelFade,
         FlightStrength,
-        TrailSpeedFactor
+        TrailSpeedFactor,
+        PolygonDetail
     };
 
     struct VideoSource {
@@ -53,7 +61,7 @@ private:
 
     struct RenderSpec {
         int frameOffset = 3;
-        float fadePercent = 2.5f;
+        float fadePercent = 15.0f;
         float flightStrength = 1.0f;
         float fps = 60.0f;
         std::string mode = "invertedGrayscale";
@@ -62,6 +70,11 @@ private:
         bool colouredParticles = false;
         bool particlesOnly = false;
         bool boids = false;
+        bool hysteresisThresholding = false;
+        bool polygonGate = false;
+        float polygonDetail = 0.0f;
+        bool objectCutout = false;
+        BoidSettings boidTuning;
     };
 
     enum class RenderState {
@@ -101,9 +114,21 @@ private:
         float opacity;
     };
 
+    InteractiveConfig interactiveConfig;
+    std::map<std::string, InteractiveSettings> sessionSettings;
+    void applySettings(const InteractiveSettings &settings);
+    InteractiveSettings currentSettings() const;
+    void reloadSettings(bool force = false);
+    void saveSettings();
     void discoverVideos();
     void loadVideo(std::size_t index);
     void pushSourceFrame(const ofPixels &pixels);
+    void updateForeground(const ofPixels &pixels);
+    void resetForeground();
+    cv::Mat thresholdMotion(const cv::Mat &grayscaleDifference) const;
+    std::vector<std::vector<cv::Point>> traceMotionPolygons(const cv::Mat &motionMask) const;
+    // The shared gate for every effect: the thresholded mask, or its filled polygons.
+    cv::Mat motionGate(const cv::Mat &grayscaleDifference) const;
     bool updateMotionFrame();
     void updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged);
     void updateTravellingPixels(const cv::Mat &grayscale, const cv::Mat &currentFrame,
@@ -121,7 +146,7 @@ private:
     void applyTargetFrameRate();
     void drawPixelControls();
     std::size_t savedSpecCount(std::size_t videoIndex) const;
-    void loadRenderSpecs(const std::filesystem::path &specsPath);
+    bool loadRenderSpecs(const std::filesystem::path &specsPath);
     bool saveRenderSpecs();
     bool renderJob(std::size_t videoIndex, std::size_t specIndex,
                    const std::filesystem::path &outputDirectory, std::size_t maxFrames,
@@ -132,6 +157,30 @@ private:
     std::vector<std::size_t> selectedSpecIndices;
     ofVideoPlayer player;
     ofTexture processedTexture;
+    ofTexture originalTexture;
+    ofAppBaseWindow *processingWindow = nullptr;
+    ofRectangle saveConfigButton;
+    ofRectangle hysteresisToggle;
+    bool hysteresisThresholding = false;
+    ofRectangle polygonGateToggle;
+    // Moving regions gate effects as whole filled polygons instead of loose pixels.
+    bool polygonGate = false;
+    ofRectangle polygonDetailField;
+    // 0 traces coarse merged outlines; 100 traces every pixel step of the mask.
+    float polygonDetail = 0.0f;
+    ofRectangle objectCutoutToggle;
+    // Inside the gate, keep only pixels the background model sees as the object in the
+    // current frame, dropping its shadow and the place it has just left.
+    bool objectCutout = false;
+    cv::Ptr<cv::BackgroundSubtractorMOG2> backgroundModel;
+    // Per source pixel: 255 object, 127 shadow, 0 background. Empty until the first frame.
+    cv::Mat foregroundMask;
+    std::string settingsStatus;
+    std::string observedSettingsText;
+    std::string pendingSettingsText;
+    bool settingsObserved = false;
+    bool settingsPending = false;
+    double nextSettingsPoll = 0;
     ofPixels latestVideoFrame;
     ofPixels motionMaskPixels;
     // The last frameOffset + 1 source frames; optical flow compares the oldest with the newest.
@@ -168,8 +217,9 @@ private:
     // With coloured particles, the displaced video shows the particles on black.
     bool particlesOnly = false;
     ofRectangle boidsToggle;
-    // Travellers flock and swirl; the tuning lives in ParticleTuning.h.
+    // Travellers flock and swirl; shared tuning is live-reloaded from [boids].
     bool boids = false;
+    BoidSettings boidTuning;
     FloatInput editingFloatInput = FloatInput::None;
     std::string floatInputText;
     std::string renderStatus;

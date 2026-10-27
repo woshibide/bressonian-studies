@@ -33,6 +33,8 @@ public:
     ParticleCanvas(const ParticleCanvas &) = delete;
     ParticleCanvas &operator=(const ParticleCanvas &) = delete;
     ~ParticleCanvas();
+    // Call with the owning context current, before its window closes.
+    void clear() { release(); owner = nullptr; }
 
     // Vertex positions are pixel indices, with x to the right and y down like the image rows.
     // primitive is GL_POINTS or GL_LINES. image must be CV_8UC3 and is updated in place.

@@ -17,6 +17,12 @@ Keep source footage unchanged and put generated media under `bin/data` or the sh
 - For screen recordings containing repeated CCTV frames, make a derived copy that removes duplicate frames while preserving presentation timestamps. Do not overwrite originals.
 - Record each conversion's filter, output path, and resulting frame count/rate so the result can be reproduced.
 
+## Interactive architecture
+
+- Keep playback, simulation updates, texture uploads and `ParticleCanvas` resources on the controls window's GL context. The video window shares textures for presentation only; it must not advance simulation. Make the owner context current for input-triggered GL work and cleanup.
+- For configuration or queue changes, read the narrow TOML schemas and save semantics in `README.md`. Interactive `settings.toml` has complete `[global]` defaults and partial per-layer overrides. Validate every mode before applying a snapshot; retain current values and report reload errors in controls. Explicit Save config guards external edits and saves the selected mode without changing other modes' effective values.
+- Keep interactive settings separate from offline `render-specs.toml`: render jobs read only the queue, never interactive settings. Preserve all queue entries and fields when appending, including unavailable videos. Migrate legacy JSON only when TOML is absent; retain the original and prefer TOML thereafter. Interactive settings persist across video changes.
+
 ## Working agreement
 
 - Make the smallest complete change and explain what changed and how to use it.

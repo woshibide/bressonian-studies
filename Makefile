@@ -15,7 +15,7 @@ include $(OF_ROOT)/libs/openFrameworksCompiled/project/makefileCommon/compile.pr
 # Project shortcuts. Run `make dev` after a code change and `make render` to render the queue.
 APP_EXE = bin/$(APPNAME).app/Contents/MacOS/$(APPNAME)
 RENDER_ARGS = $(if $(PARALLEL),--jobs $(PARALLEL)) $(if $(FRAMES),--frames $(FRAMES)) \
-	$(if $(ONLY),--only $(ONLY)) $(if $(OUT),--out $(OUT))
+	$(if $(ONLY),--only $(ONLY)) $(if $(OUT),--out $(OUT)) $(if $(SPECS),--specs $(SPECS))
 
 .PHONY: dev stop render
 
@@ -28,10 +28,10 @@ dev: Release stop
 stop:
 	@pkill -f '$(APPNAME).app/Contents/MacOS/$(APPNAME)$$' || true
 
-# Render every spec in bin/data/render-specs.json to MP4 without opening a window.
+# Render every spec in bin/data/render-specs.toml to MP4 without opening a window.
 # Each run writes to a new bin/data/renders/inverted-motion-trails/video/<timestamp>/ folder.
 # Options: PARALLEL=N (specs at once), FRAMES=N (limit per spec), ONLY=video or video/spec,
-# OUT=directory.
+# OUT=directory, SPECS=path/to/queue.toml.
 # The build log only prints when the build fails, so the status table stays readable.
 render:
 	@echo "building $(APPNAME)..."
