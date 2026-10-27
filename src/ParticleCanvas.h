@@ -36,10 +36,19 @@ public:
     // Call with the owning context current, before its window closes.
     void clear() { release(); owner = nullptr; }
 
+    // A run of vertices drawn in order after the batches before it.
+    struct Batch {
+        const Vertex *data;
+        std::size_t count;
+    };
+
     // Vertex positions are pixel indices, with x to the right and y down like the image rows.
     // primitive is GL_POINTS or GL_LINES. image must be CV_8UC3 and is updated in place.
+    void draw(cv::Mat &image, const std::vector<Batch> &batches, GLenum primitive, Blend blend);
     void draw(cv::Mat &image, const std::vector<Vertex> &vertices, GLenum primitive,
-              Blend blend);
+              Blend blend) {
+        draw(image, {{vertices.data(), vertices.size()}}, primitive, blend);
+    }
 
 private:
     void allocate(int width, int height);

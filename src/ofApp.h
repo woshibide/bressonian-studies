@@ -76,6 +76,7 @@ private:
         float polygonDetail = 0.0f;
         bool objectCutout = false;
         float speedContrast = 0.0f;
+        bool bakeStoppedPixels = false;
         BoidSettings boidTuning;
     };
 
@@ -136,6 +137,9 @@ private:
     void updateTravellingPixels(const cv::Mat &grayscale, const cv::Mat &currentFrame,
                                 bool motionMeasured, bool injectMotion);
     float fadeFactor() const;
+    // Drops live and baked travellers and the persistent particle paint.
+    void clearTravellers();
+    void clearBaked();
     LayerMode layerModeFromName(const std::string &name) const;
     std::string layerModeName() const;
     static PixelTreatment pixelTreatmentFromName(const std::string &name);
@@ -212,6 +216,18 @@ private:
     ofRectangle speedContrastField;
     // Coloured particles stretch their colour away from mid grey by 1 + this * speed.
     float speedContrast = 0.0f;
+    ofRectangle bakeToggle;
+    // At pixel fade 0, travellers that stop stay drawn where they stopped. Only takes effect
+    // at fade 0; raising the fade switches it off.
+    bool bakeStoppedPixels = false;
+    // Last drawn vertices of stopped travellers, oldest first from bakedStart. Beyond
+    // maxBakedTravellers the oldest are dropped first.
+    std::vector<ParticleCanvas::Vertex> bakedVertices;
+    std::size_t bakedStart = 0;
+    std::size_t bakedVerticesPerTraveller = 1;
+    // Coloured smear at fade 0 paints here, premultiplied by its coverage, over the live video.
+    cv::Mat particlePaint;
+    cv::Mat particleCoverage;
     ofRectangle saveSpecsButton;
     ofRectangle treatmentField;
     bool treatmentMenuOpen = false;

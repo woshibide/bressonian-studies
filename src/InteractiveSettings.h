@@ -29,6 +29,7 @@ struct InteractiveSettings {
     float polygonDetail = 0.0f;
     bool objectCutout = false;
     float speedContrast = 0.0f;
+    bool bakeStoppedPixels = false;
         BoidSettings boidTuning;
 
     static std::string read(const std::string &path, std::size_t limit = 65536) {
@@ -76,7 +77,7 @@ struct InteractiveSettings {
                 key != "particlesOnly" && key != "boids" && key != "useSixtyFps" &&
                 key != "hysteresisThresholding" && key != "polygonGate" &&
                 key != "polygonDetail" && key != "objectCutout" &&
-                key != "speedContrast") {
+                key != "speedContrast" && key != "bakeStoppedPixels") {
                 fail("unknown key '" + key + "'");
             }
             if (!values.emplace(key, value).second) fail("duplicate key '" + key + "'");
@@ -138,6 +139,8 @@ struct InteractiveSettings {
             result.objectCutout = boolean("objectCutout");
         if (values.count("speedContrast"))
             result.speedContrast = static_cast<float>(number("speedContrast", 0, 100, false));
+        if (values.count("bakeStoppedPixels"))
+            result.bakeStoppedPixels = boolean("bakeStoppedPixels");
         return result;
     }
 
@@ -159,7 +162,8 @@ struct InteractiveSettings {
             << "polygonGate = " << polygonGate << '\n'
             << "polygonDetail = " << polygonDetail << '\n'
             << "objectCutout = " << objectCutout << '\n'
-            << "speedContrast = " << speedContrast << '\n';
+            << "speedContrast = " << speedContrast << '\n'
+            << "bakeStoppedPixels = " << bakeStoppedPixels << '\n';
         return out.str();
     }
 };
@@ -226,6 +230,7 @@ struct InteractiveConfig {
         result.global.emplace("polygonDetail", "0");
         result.global.emplace("objectCutout", "false");
         result.global.emplace("speedContrast", "0");
+        result.global.emplace("bakeStoppedPixels", "false");
         for (const auto &entry : result.overrides) {
             try { result.resolve(entry.first); }
             catch (const std::exception &error) { throw std::runtime_error("[" + entry.first + "]: " + error.what()); }

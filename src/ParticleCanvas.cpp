@@ -3,6 +3,7 @@
 
 #include "ParticleCanvas.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 ParticleCanvas::~ParticleCanvas() {
@@ -47,12 +48,13 @@ void ParticleCanvas::allocate(int newWidth, int newHeight) {
     height = newHeight;
 }
 
-void ParticleCanvas::draw(cv::Mat &image, const std::vector<Vertex> &vertices,
+void ParticleCanvas::draw(cv::Mat &image, const std::vector<Batch> &batches,
                           GLenum primitive, Blend blend) {
     if (image.type() != CV_8UC3 || !image.isContinuous()) {
         throw std::invalid_argument("ParticleCanvas draws onto continuous CV_8UC3 images");
     }
-    if (vertices.empty()) {
+    if (std::all_of(batches.begin(), batches.end(),
+                    [](const Batch &batch) { return batch.count == 0; })) {
         return;
     }
 
@@ -116,9 +118,12 @@ void ParticleCanvas::draw(cv::Mat &image, const std::vector<Vertex> &vertices,
     glEnableClientState(GL_COLOR_ARRAY);
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glDisableClientState(GL_NORMAL_ARRAY);
-    glVertexPointer(2, GL_FLOAT, sizeof(Vertex), &vertices[0].x);
-    glColorPointer(4, GL_UNSIGNED_BYTE, sizeof(Vertex), &vertices[0].red);
-    glDrawArrays(primitive, 0, static_cast<GLsizei>(vertices.size()));
+    for (const Batch &batch : batches) {
+        if (batch.count == 0) continue;
+        glVertexPointer(2, GL_FLOAT, sizeof(Vertex), &batch.data[0].x);
+        glColorPointer(4, GL_UNSIGNED_BYTE, sizeof(Vertex), &batch.data[0].red);
+        glDrawArrays(primitive, 0, static_cast<GLsizei>(batch.count));
+    }
 
     glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, image.data);
 

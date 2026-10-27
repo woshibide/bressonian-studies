@@ -27,6 +27,7 @@
 
 namespace {
 
+using particleTuning::maxBakedTravellers;
 using particleTuning::maxTravellers;
 
 of::filesystem::path appDataPath(const of::filesystem::path &relativePath) {
@@ -65,6 +66,7 @@ InteractiveSettings ofApp::currentSettings() const {
     settings.polygonDetail = polygonDetail;
     settings.objectCutout = objectCutout;
     settings.speedContrast = speedContrast;
+    settings.bakeStoppedPixels = bakeStoppedPixels;
     settings.useSixtyFps = useSixtyFps;
     return settings;
 }
@@ -109,7 +111,8 @@ void ofApp::applySettings(const InteractiveSettings &settings) {
         pixelTreatmentName(pixelTreatment) != settings.treatment ||
         colouredParticles != settings.colouredParticles || particlesOnly != settings.particlesOnly ||
         hysteresisThresholding != settings.hysteresisThresholding ||
-        polygonGate != settings.polygonGate || objectCutout != settings.objectCutout;
+        polygonGate != settings.polygonGate || objectCutout != settings.objectCutout ||
+        bakeStoppedPixels != (settings.bakeStoppedPixels && settings.pixelFadePercent <= 0.0f);
     // A model that learned while the cutout was off would start from a stale background.
     if (objectCutout != settings.objectCutout) resetForeground();
     frameOffset = settings.frameOffset;
@@ -127,12 +130,14 @@ void ofApp::applySettings(const InteractiveSettings &settings) {
     polygonDetail = settings.polygonDetail;
     objectCutout = settings.objectCutout;
     speedContrast = settings.speedContrast;
+    // Accepted with any fade, but baking only exists at fade 0.
+    bakeStoppedPixels = settings.bakeStoppedPixels && settings.pixelFadePercent <= 0.0f;
     useSixtyFps = settings.useSixtyFps;
     if (resetHistory) sourceFrameHistory.clear();
     if (resetEffect) {
         hasProcessedFrame = false;
         invertedLayerInitialized = false;
-        travellingPixels.clear();
+        clearTravellers();
     }
     editingFloatInput = FloatInput::None;
     treatmentMenuOpen = false;
@@ -299,6 +304,7 @@ bool ofApp::loadRenderSpecs(const std::filesystem::path &specsPath) {
             spec.polygonDetail = sourceSpec.value("polygonDetail", 0.0f);
             spec.objectCutout = sourceSpec.value("objectCutout", false);
             spec.speedContrast = sourceSpec.value("speedContrast", 0.0f);
+            spec.bakeStoppedPixels = sourceSpec.value("bakeStoppedPixels", false);
             std::map<std::string, std::string> tuning;
             for (auto it = sourceSpec.begin(); it != sourceSpec.end(); ++it)
                 if (BoidSettings::isKey(it.key())) tuning[it.key()] = it.value().dump();
@@ -418,6 +424,7 @@ bool ofApp::saveRenderSpecs() {
     spec.polygonDetail = polygonDetail;
     spec.objectCutout = objectCutout;
     spec.speedContrast = speedContrast;
+    spec.bakeStoppedPixels = bakeStoppedPixels;
     // Append to the complete disk document, including unavailable videos and custom names.
     auto &videos = document["videos"];
     auto found = std::find_if(videos.begin(), videos.end(), [&](const ofJson &video) {
@@ -439,6 +446,7 @@ bool ofApp::saveRenderSpecs() {
         {"boids", spec.boids}, {"hysteresisThresholding", spec.hysteresisThresholding},
         {"polygonGate", spec.polygonGate}, {"polygonDetail", spec.polygonDetail},
         {"objectCutout", spec.objectCutout}, {"speedContrast", spec.speedContrast},
+        {"bakeStoppedPixels", spec.bakeStoppedPixels},
         {"boidCellSize", spec.boidTuning.boidCellSize},
         {"boidAlignment", spec.boidTuning.boidAlignment},
         {"boidCohesion", spec.boidTuning.boidCohesion},
@@ -475,7 +483,7 @@ void ofApp::loadVideo(std::size_t index) {
     displacementMapPixels.clear();
     displacedVideoPixels.clear();
     displacementField.release();
-    travellingPixels.clear();
+    clearTravellers();
     resetForeground();
     hasLatestVideoFrame = false;
     hasProcessedFrame = false;
@@ -510,6 +518,18 @@ void ofApp::applyTargetFrameRate() {
 
 float ofApp::fadeFactor() const {
     return 1.0f - pixelFadePercent / 100.0f;
+}
+
+void ofApp::clearTravellers() {
+    travellingPixels.clear();
+    clearBaked();
+    particlePaint.release();
+    particleCoverage.release();
+}
+
+void ofApp::clearBaked() {
+    bakedVertices.clear();
+    bakedStart = 0;
 }
 
 void ofApp::update() {
@@ -758,7 +778,7 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
         } else {
             std::memcpy(displacedVideoPixels.getData(), pixels.getData(), pixels.size());
         }
-        travellingPixels.clear();
+        clearTravellers();
         pendingFlow.release();
         pendingMovingPixels.release();
         pendingTravellers.clear();
@@ -778,7 +798,7 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
             std::memcpy(displacedVideoPixels.getData(), pixels.getData(), pixels.size());
         }
         std::memset(accumulatedInvertedFrame.getData(), 0, accumulatedInvertedFrame.size());
-        travellingPixels.clear();
+        clearTravellers();
         pendingFlow.release();
         pendingMovingPixels.release();
         pendingTravellers.clear();
@@ -872,7 +892,10 @@ void ofApp::updateInvertedFrame(const ofPixels &pixels, bool sourceFrameChanged)
                       cv::BORDER_REPLICATE);
             cv::remap(previousDisplacedFrame, warpedFeedbackFrame, mapX, mapY,
                       cv::INTER_LINEAR, cv::BORDER_REPLICATE);
-            const float feedbackWeight = std::clamp(fadeFactor, 0.0f, 0.98f);
+            // Fade 0 is a true zero: the output only re-warps itself and the video stops
+            // coming back. Above 0 the live frame always returns by at least 2% per frame.
+            const float feedbackWeight =
+                pixelFadePercent <= 0.0f ? 1.0f : std::clamp(fadeFactor, 0.0f, 0.98f);
             cv::addWeighted(warpedCurrentFrame, 1.0f - feedbackWeight,
                             warpedFeedbackFrame, feedbackWeight, 0.0, displacedFrame);
         } else if (pixelTreatment == PixelTreatment::Streak) {
@@ -929,7 +952,18 @@ void ofApp::updateTravellingPixels(const cv::Mat &grayscale, const cv::Mat &curr
     cv::Mat inverted;
     cv::bitwise_not(grayscale, inverted);
     cv::Mat target;
+    cv::Mat background;
     const float fadeFactor = this->fadeFactor();
+    const bool zeroFade = pixelFadePercent <= 0.0f;
+    // Smear and grayscale traces already keep every pixel at fade 0, so baking only applies
+    // where the frame is redrawn from scratch each output frame.
+    const bool persistentTarget =
+        !colourMode || (!drawMap && pixelTreatment == PixelTreatment::Smear);
+    const bool bakeStopped = bakeStoppedPixels && zeroFade && !persistentTarget;
+    // At fade 0 coloured smear paints a persistent layer over the live video instead of
+    // feeding the whole frame back, which would freeze the video.
+    const bool paintOverLive =
+        zeroFade && colourMode && !drawMap && pixelTreatment == PixelTreatment::Smear;
 
     if (!colourMode) {
         target = cv::Mat(height, width, CV_8UC3, accumulatedInvertedFrame.getData());
@@ -942,9 +976,10 @@ void ofApp::updateTravellingPixels(const cv::Mat &grayscale, const cv::Mat &curr
     } else {
         target = cv::Mat(height, width, CV_8UC3, displacedVideoPixels.getData());
         // Particles only replaces the current frame with black, so no source pixels show.
-        const cv::Mat background =
-            particlesOnly ? cv::Mat::zeros(height, width, CV_8UC3) : currentFrame;
-        if (pixelTreatment == PixelTreatment::Smear) {
+        background = particlesOnly ? cv::Mat::zeros(height, width, CV_8UC3) : currentFrame;
+        if (paintOverLive) {
+            // Composed after the particles are painted below.
+        } else if (pixelTreatment == PixelTreatment::Smear) {
             // Old paint fades toward the background; particles keep painting over it.
             const float feedbackWeight = std::clamp(fadeFactor, 0.0f, 0.98f);
             cv::addWeighted(background, 1.0f - feedbackWeight, target, feedbackWeight, 0.0,
@@ -1205,8 +1240,11 @@ void ofApp::updateTravellingPixels(const cv::Mat &grayscale, const cv::Mat &curr
         traveller.velocityY = traveller.directionY * speed;
     };
 
+    if (!bakeStopped || bakedVerticesPerTraveller != verticesPerTraveller) clearBaked();
+    bakedVerticesPerTraveller = verticesPerTraveller;
     // Travellers move independently, so the simulation runs across all cores.
     std::vector<ParticleCanvas::Vertex> vertices(travellingPixels.size() * verticesPerTraveller);
+    std::vector<unsigned char> bakeNow(bakeStopped ? travellingPixels.size() : 0, 0);
     cv::parallel_for_(cv::Range(0, static_cast<int>(travellingPixels.size())),
                       [&](const cv::Range &range) {
         for (int index = range.start; index < range.end; ++index) {
@@ -1222,14 +1260,21 @@ void ofApp::updateTravellingPixels(const cv::Mat &grayscale, const cv::Mat &curr
             writeVertices(traveller, &vertices[index * verticesPerTraveller]);
 
             // Fully faded travellers can no longer change a pixel, so they end with the others.
-            if (traveller.opacity * 255.0f < 1.0f ||
-                std::hypot(traveller.velocityX, traveller.velocityY) < stopSpeed ||
-                traveller.x < 0 || traveller.x >= width ||
-                traveller.y < 0 || traveller.y >= height) {
+            const bool stopped = std::hypot(traveller.velocityX, traveller.velocityY) < stopSpeed;
+            const bool outside = traveller.x < 0 || traveller.x >= width ||
+                                 traveller.y < 0 || traveller.y >= height;
+            if (traveller.opacity * 255.0f < 1.0f || stopped || outside) {
                 traveller.brightness = 0;
+                if (bakeStopped && stopped && !outside) bakeNow[index] = 1;
             }
         }
     });
+    // A stopped traveller keeps the shape it was last drawn with, in traveller order.
+    for (std::size_t index = 0; index < bakeNow.size(); ++index) {
+        if (!bakeNow[index]) continue;
+        const auto first = vertices.begin() + index * verticesPerTraveller;
+        bakedVertices.insert(bakedVertices.end(), first, first + verticesPerTraveller);
+    }
     travellingPixels.erase(
         std::remove_if(travellingPixels.begin(), travellingPixels.end(),
                        [](const TravellingPixel &traveller) {
@@ -1317,8 +1362,38 @@ void ofApp::updateTravellingPixels(const cv::Mat &grayscale, const cv::Mat &curr
         }
     }
 
-    // Moved travellers first, then new ones, in the same order the CPU used to draw them.
-    particleCanvas.draw(target, vertices, drawPoints ? GL_POINTS : GL_LINES,
+    const std::size_t bakedCount = (bakedVertices.size() - bakedStart) / verticesPerTraveller;
+    if (bakedCount > maxBakedTravellers) {
+        bakedStart += (bakedCount - maxBakedTravellers) * verticesPerTraveller;
+    }
+    if (bakedStart > 0 && bakedStart * 2 >= bakedVertices.size()) {
+        bakedVertices.erase(bakedVertices.begin(), bakedVertices.begin() + bakedStart);
+        bakedStart = 0;
+    }
+
+    if (paintOverLive) {
+        if (particlePaint.size() != target.size()) {
+            particlePaint = cv::Mat::zeros(target.size(), CV_8UC3);
+            particleCoverage = cv::Mat::zeros(target.size(), CV_8UC3);
+        }
+        std::vector<ParticleCanvas::Vertex> coverageVertices = vertices;
+        for (auto &vertex : coverageVertices) vertex.red = vertex.green = vertex.blue = 255;
+        particleCanvas.draw(particlePaint, vertices, GL_POINTS, ParticleCanvas::Blend::Cover);
+        particleCanvas.draw(particleCoverage, coverageVertices, GL_POINTS,
+                            ParticleCanvas::Blend::Cover);
+        // output = paint + background * (1 - coverage)
+        cv::Mat uncovered;
+        cv::subtract(cv::Scalar::all(255), particleCoverage, uncovered);
+        cv::multiply(background, uncovered, target, 1.0 / 255.0);
+        cv::add(target, particlePaint, target);
+        return;
+    }
+    // Baked travellers first, under the moving ones, then moved and new travellers in the
+    // same order the CPU used to draw them.
+    particleCanvas.draw(target,
+                        {{bakedVertices.data() + bakedStart, bakedVertices.size() - bakedStart},
+                         {vertices.data(), vertices.size()}},
+                        drawPoints ? GL_POINTS : GL_LINES,
                         colourMode ? ParticleCanvas::Blend::Cover : ParticleCanvas::Blend::Add);
 }
 
@@ -1422,8 +1497,11 @@ void ofApp::draw() {
     const std::string fpsLabel = useSixtyFps
                                      ? "60 FPS"
                                      : "Source FPS " + ofToString(sources[selectedVideo].averageFps, 2);
-    std::string traceCount = "Traces: " + ofToString(travellingPixels.size()) +
-                             " / " + ofToString(maxTravellers);
+    const std::size_t bakedCount =
+        (bakedVertices.size() - bakedStart) / std::max<std::size_t>(1, bakedVerticesPerTraveller);
+    std::string traceCount = "Traces " + ofToString(travellingPixels.size()) + "/" +
+                             ofToString(maxTravellers) + "  baked " + ofToString(bakedCount) +
+                             "/" + ofToString(maxBakedTravellers);
     if (travellingPixels.size() >= maxTravellers) {
         traceCount += " FULL";
     }
@@ -1433,7 +1511,7 @@ void ofApp::draw() {
                            "   |   Saved specs: " +
                            ofToString(savedSpecCount(selectedVideo)),
                        28, ofGetHeight() - 185);
-    ofDrawBitmapString(traceCount, ofGetWidth() - 320, ofGetHeight() - 158);
+    ofDrawBitmapString(traceCount, 665, ofGetHeight() - 150);
     ofSetColor(155);
     drawPixelControls();
     ofDrawBitmapString("[ / ]: previous / next video    Left / Right: layer    Up / Down: offset    F: source / 60 FPS",
@@ -1457,6 +1535,7 @@ void ofApp::keyPressed(int key) {
                     std::isfinite(enteredValue)) {
                     if (editingFloatInput == FloatInput::PixelFade) {
                         pixelFadePercent = enteredValue;
+                        if (pixelFadePercent > 0.0f) bakeStoppedPixels = false;
                     } else if (editingFloatInput == FloatInput::FlightStrength) {
                         pixelFlightStrength = enteredValue;
                     } else if (editingFloatInput == FloatInput::PolygonDetail) {
@@ -1524,7 +1603,7 @@ void ofApp::keyPressed(int key) {
             layerMode == LayerMode::DisplacementMap ||
             layerMode == LayerMode::DisplacedVideo) {
             invertedLayerInitialized = false;
-            travellingPixels.clear();
+            clearTravellers();
         }
         return;
     }
@@ -1552,6 +1631,7 @@ void ofApp::drawPixelControls() {
     flightStrengthField.set(440, y + 2, 95, 27);
     trailSpeedFactorField.set(700, y + 2, 105, 27);
     speedContrastField.set(205, y - 33, 95, 27);
+    bakeToggle.set(445, y - 33, 210, 27);
     saveSpecsButton.set(850, y + 2, 125, 27);
     treatmentField.set(205, y + 37, 125, 27);
     particlesToggle.set(345, y + 37, 230, 27);
@@ -1597,8 +1677,17 @@ void ofApp::drawPixelControls() {
                                                              : ofToString(speedContrast, 2),
               editingFloatInput == FloatInput::SpeedContrast);
     ofSetColor(155);
-    ofDrawBitmapString("0-100; coloured particles gain contrast with speed (0 = off)",
-                       speedContrastField.getRight() + 15, speedContrastField.y + 18);
+    ofDrawBitmapString("0-100, 0 = off", speedContrastField.getRight() + 15,
+                       speedContrastField.y + 18);
+    drawField(bakeToggle,
+              std::string(bakeStoppedPixels ? "[x]" : "[ ]") + " Bake stopped pixels",
+              bakeStoppedPixels);
+    // Baking only exists at fade 0, so the toggle is dimmed and inert above it.
+    if (pixelFadePercent > 0.0f) {
+        ofEnableAlphaBlending();
+        ofSetColor(12, 14, 18, 170);
+        ofDrawRectangle(bakeToggle);
+    }
     drawField(treatmentField, pixelTreatmentName(pixelTreatment), treatmentMenuOpen);
     ofSetColor(235);
     ofDrawTriangle(treatmentField.getRight() - 18, treatmentField.y + 11,
@@ -1695,6 +1784,7 @@ void ofApp::mousePressed(int x, int y, int button) {
         for (std::size_t index = 0; index < 3; ++index) {
             if (treatmentOptionRect(index).inside(x, y)) {
                 pixelTreatment = options[index];
+                clearBaked();
             }
         }
         treatmentMenuOpen = false;
@@ -1711,7 +1801,7 @@ void ofApp::mousePressed(int x, int y, int button) {
         floatInputText.clear();
         colouredParticles = !colouredParticles;
         invertedLayerInitialized = false;
-        travellingPixels.clear();
+        clearTravellers();
         return;
     }
     if (particlesOnlyToggle.inside(x, y)) {
@@ -1721,6 +1811,15 @@ void ofApp::mousePressed(int x, int y, int button) {
         // Drop old smear paint so the switch shows at once.
         if (particlesOnly && displacedVideoPixels.isAllocated()) {
             std::memset(displacedVideoPixels.getData(), 0, displacedVideoPixels.size());
+        }
+        return;
+    }
+    if (bakeToggle.inside(x, y)) {
+        editingFloatInput = FloatInput::None;
+        floatInputText.clear();
+        if (pixelFadePercent <= 0.0f) {
+            bakeStoppedPixels = !bakeStoppedPixels;
+            clearBaked();
         }
         return;
     }
@@ -1775,6 +1874,7 @@ bool ofApp::renderJob(std::size_t videoIndex, std::size_t specIndex,
     polygonDetail = spec.polygonDetail;
     objectCutout = spec.objectCutout;
     speedContrast = spec.speedContrast;
+    bakeStoppedPixels = spec.bakeStoppedPixels && spec.fadePercent <= 0.0f;
     resetForeground();
     motionMaskPixels.clear();
     sourceFrameHistory.clear();
@@ -1782,7 +1882,7 @@ bool ofApp::renderJob(std::size_t videoIndex, std::size_t specIndex,
     displacementMapPixels.clear();
     displacedVideoPixels.clear();
     displacementField.release();
-    travellingPixels.clear();
+    clearTravellers();
     travellerSampler.seed(0x6f70656e4657ULL);
     invertedLayerInitialized = false;
 
@@ -2197,5 +2297,16 @@ int ofApp::runRenderCommand(const std::vector<std::string> &args) {
 
     std::cout << "done: " << (jobs.size() - failures) << "/" << jobs.size() << " specs in "
               << clock(secondsSinceStart()) << " -> " << outputDirectory.string() << std::endl;
+    // Reveal the videos in Finder when a person ran the render from a terminal.
+    if (liveStatus && failures < jobs.size()) {
+        std::string quoted = "'";
+        for (const char character : outputDirectory.string()) {
+            quoted += character == '\'' ? std::string("'\\''") : std::string(1, character);
+        }
+        const std::string command = "open " + quoted + "'";
+        if (std::system(command.c_str()) != 0) {
+            std::cout << "could not open " << outputDirectory.string() << std::endl;
+        }
+    }
     return failures == 0 ? 0 : 1;
 }

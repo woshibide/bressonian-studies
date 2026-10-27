@@ -33,7 +33,7 @@ inline void validate(const ofJson &document) {
     for (auto it = document.begin(); it != document.end(); ++it)
         if (it.key() != "version" && it.key() != "videos") throw std::runtime_error("unknown queue key: " + it.key());
     const std::set<std::string> numbers = {"fadePercent", "flightStrength", "fps", "trailSpeedFactor", "polygonDetail", "speedContrast"};
-    const std::set<std::string> booleans = {"boids", "colouredParticles", "particlesOnly", "hysteresisThresholding", "polygonGate", "objectCutout"};
+    const std::set<std::string> booleans = {"boids", "colouredParticles", "particlesOnly", "hysteresisThresholding", "polygonGate", "objectCutout", "bakeStoppedPixels"};
     for (const auto &video : document.at("videos")) {
         if (!video.is_object() || !video.contains("source") || !video.at("source").is_string())
             throw std::runtime_error("each video requires a source string");

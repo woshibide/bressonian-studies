@@ -1,0 +1,236 @@
+version = 1
+
+[[videos]]
+input = "fps-normalized/daegu-native-cadence.mp4"
+source = "Daegu"
+
+[[videos.specs]]
+boidAlignment = 0.800000011920929
+boidCellSize = 16
+boidCohesion = 0.4000000059604645
+boidCrowdCount = 24.0
+boidSeparation = 0.10000000149011612
+boidSwirl = 0.10000000149011612
+boidSwirlDirection = -1.0
+boids = true
+colouredParticles = true
+fadePercent = 15.0
+flightStrength = 1.0
+fps = 60.0
+frameOffset = 30
+hysteresisThresholding = false
+mode = "displacedVideo"
+name = "Spec 01"
+objectCutout = true
+particlesOnly = false
+polygonDetail = 0.0
+polygonGate = false
+trailSpeedFactor = 0.15000000596046448
+treatment = "smear"
+
+[[videos.specs]]
+boidAlignment = 0.800000011920929
+boidCellSize = 16
+boidCohesion = 0.4000000059604645
+boidCrowdCount = 24.0
+boidSeparation = 0.10000000149011612
+boidSwirl = 0.10000000149011612
+boidSwirlDirection = -1.0
+boids = true
+colouredParticles = true
+fadePercent = 15.0
+flightStrength = 1.0
+fps = 60.0
+frameOffset = 30
+hysteresisThresholding = true
+mode = "displacedVideo"
+name = "Spec 02"
+objectCutout = true
+particlesOnly = false
+polygonDetail = 100.0
+polygonGate = true
+trailSpeedFactor = 0.15000000596046448
+treatment = "smear"
+
+[[videos.specs]]
+boidAlignment = 0.800000011920929
+boidCellSize = 16
+boidCohesion = 0.4000000059604645
+boidCrowdCount = 24.0
+boidSeparation = 0.10000000149011612
+boidSwirl = 0.10000000149011612
+boidSwirlDirection = -1.0
+boids = true
+colouredParticles = true
+fadePercent = 15.0
+flightStrength = 1.0
+fps = 60.0
+frameOffset = 2
+hysteresisThresholding = true
+mode = "displacedVideo"
+name = "Spec 03"
+objectCutout = true
+particlesOnly = false
+polygonDetail = 100.0
+polygonGate = true
+trailSpeedFactor = 0.15000000596046448
+treatment = "smear"
+
+[[videos.specs]]
+boidAlignment = 0.800000011920929
+boidCellSize = 16
+boidCohesion = 0.4000000059604645
+boidCrowdCount = 24.0
+boidSeparation = 0.10000000149011612
+boidSwirl = 0.10000000149011612
+boidSwirlDirection = -1.0
+boids = true
+colouredParticles = true
+fadePercent = 15.0
+flightStrength = 1.0
+fps = 60.0
+frameOffset = 2
+hysteresisThresholding = true
+mode = "displacedVideo"
+name = "Spec 04"
+objectCutout = true
+particlesOnly = false
+polygonDetail = 100.0
+polygonGate = true
+trailSpeedFactor = 0.15000000596046448
+treatment = "streak"
+
+[[videos.specs]]
+boidAlignment = 0.800000011920929
+boidCellSize = 16
+boidCohesion = 0.4000000059604645
+boidCrowdCount = 24.0
+boidSeparation = 0.10000000149011612
+boidSwirl = 0.10000000149011612
+boidSwirlDirection = -1.0
+boids = true
+colouredParticles = true
+fadePercent = 15.0
+flightStrength = 0.20000000298023224
+fps = 60.0
+frameOffset = 2
+hysteresisThresholding = true
+mode = "displacedVideo"
+name = "Spec 05"
+objectCutout = true
+particlesOnly = false
+polygonDetail = 100.0
+polygonGate = false
+trailSpeedFactor = 0.009999999776482582
+treatment = "stretch"
+
+[[videos.specs]]
+bakeStoppedPixels = true
+boidAlignment = 0.800000011920929
+boidCellSize = 16
+boidCohesion = 0.4000000059604645
+boidCrowdCount = 24.0
+boidSeparation = 0.10000000149011612
+boidSwirl = 0.10000000149011612
+boidSwirlDirection = -1.0
+boids = true
+colouredParticles = true
+fadePercent = 0.0
+flightStrength = 1.5
+fps = 60.0
+frameOffset = 3
+hysteresisThresholding = true
+mode = "displacedVideo"
+name = "Spec 06"
+objectCutout = true
+particlesOnly = false
+polygonDetail = 100.0
+polygonGate = false
+speedContrast = 0.05000000074505806
+trailSpeedFactor = 0.15000000596046448
+treatment = "smear"
+
+[[videos]]
+input = "fps-normalized/korea-native-cadence.mp4"
+source = "Korea"
+
+[[videos.specs]]
+boidAlignment = 0.800000011920929
+boidCellSize = 16
+boidCohesion = 0.4000000059604645
+boidCrowdCount = 24.0
+boidSeparation = 0.10000000149011612
+boidSwirl = 0.10000000149011612
+boidSwirlDirection = -1.0
+boids = true
+colouredParticles = true
+fadePercent = 3.5
+flightStrength = 1.0
+fps = 60.0
+frameOffset = 3
+hysteresisThresholding = true
+mode = "displacedVideo"
+name = "Spec 01"
+objectCutout = true
+particlesOnly = false
+polygonDetail = 100.0
+polygonGate = true
+speedContrast = 0.009999999776482582
+trailSpeedFactor = 0.15000000596046448
+treatment = "smear"
+
+[[videos.specs]]
+bakeStoppedPixels = true
+boidAlignment = 0.800000011920929
+boidCellSize = 16
+boidCohesion = 0.4000000059604645
+boidCrowdCount = 24.0
+boidSeparation = 0.10000000149011612
+boidSwirl = 0.10000000149011612
+boidSwirlDirection = -1.0
+boids = true
+colouredParticles = true
+fadePercent = 0.0
+flightStrength = 1.5
+fps = 60.0
+frameOffset = 3
+hysteresisThresholding = true
+mode = "displacedVideo"
+name = "Spec 02"
+objectCutout = true
+particlesOnly = false
+polygonDetail = 100.0
+polygonGate = false
+speedContrast = 0.05000000074505806
+trailSpeedFactor = 0.15000000596046448
+treatment = "smear"
+
+[[videos]]
+input = "fps-normalized/meagan-native-cadence.mp4"
+source = "Meagan"
+
+[[videos.specs]]
+bakeStoppedPixels = true
+boidAlignment = 0.800000011920929
+boidCellSize = 16
+boidCohesion = 0.4000000059604645
+boidCrowdCount = 24.0
+boidSeparation = 0.10000000149011612
+boidSwirl = 0.10000000149011612
+boidSwirlDirection = -1.0
+boids = true
+colouredParticles = true
+fadePercent = 0.0
+flightStrength = 0.25
+fps = 60.0
+frameOffset = 3
+hysteresisThresholding = true
+mode = "displacedVideo"
+name = "Spec 01"
+objectCutout = false
+particlesOnly = false
+polygonDetail = 100.0
+polygonGate = true
+speedContrast = 0.05000000074505806
+trailSpeedFactor = 50.0
+treatment = "streak"
