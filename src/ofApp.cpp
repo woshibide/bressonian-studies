@@ -39,7 +39,7 @@ of::filesystem::path appDataPath(const of::filesystem::path &relativePath) {
 
 void ofApp::setup() {
     processingWindow = ofGetWindowPtr();
-    ofSetWindowTitle("CCTV Controls");
+    ofSetWindowTitle("CCTV Video");
     ofSetVerticalSync(true);
 
     discoverVideos();
@@ -47,6 +47,16 @@ void ofApp::setup() {
 
     loadVideo(0);
     reloadSettings(true);
+    try {
+        webControls = std::make_unique<WebControls>();
+        webControls->start(appDataPath("controls").string());
+        publishWebState(true);
+        ofLogNotice("controls") << "Vue controls: http://127.0.0.1:" << WebControls::port;
+    } catch (const std::exception &error) {
+        ofLogError("controls") << "Cannot start controls on port " << WebControls::port
+                               << ": " << error.what();
+        ofExit(1);
+    }
 }
 
 InteractiveSettings ofApp::currentSettings() const {
@@ -95,6 +105,7 @@ void ofApp::reloadSettings(bool force) {
         interactiveConfig = config;
         sessionSettings.clear();
         applySettings(settings);
+        controlsDirty = false;
         settingsStatus = "Loaded. Live reload active; UI edits are unsaved until Save config.";
         ofLogNotice("settings") << settingsStatus;
     } catch (const std::exception &error) {
@@ -139,8 +150,6 @@ void ofApp::applySettings(const InteractiveSettings &settings) {
         invertedLayerInitialized = false;
         clearTravellers();
     }
-    editingFloatInput = FloatInput::None;
-    treatmentMenuOpen = false;
     applyTargetFrameRate();
 }
 
@@ -169,6 +178,7 @@ void ofApp::saveSettings() {
         std::filesystem::rename(temporary, path);
         observedSettingsText = text;
         interactiveConfig = config;
+        controlsDirty = false;
         settingsStatus = "Saved current controls to bin/data/settings.toml.";
     } catch (const std::exception &error) {
         std::error_code ignored;
@@ -178,6 +188,7 @@ void ofApp::saveSettings() {
 }
 
 void ofApp::exit() {
+    if (webControls) webControls->stop();
     if (processingWindow) {
         processingWindow->makeCurrent();
         player.close();
@@ -533,9 +544,11 @@ void ofApp::clearBaked() {
 }
 
 void ofApp::update() {
-    // Only this window owns playback, simulation, uploads and ParticleCanvas FBOs.
+    // The native video window owns playback, simulation, uploads and ParticleCanvas FBOs.
     processingWindow->makeCurrent();
     reloadSettings();
+    processWebCommands();
+    publishWebState();
     player.update();
     const bool sourceFrameChanged = player.isLoaded() && player.isFrameNew();
     if (sourceFrameChanged) {
@@ -545,7 +558,6 @@ void ofApp::update() {
         }
         latestVideoFrame = pixels;
         originalTexture.loadData(pixels);
-        glFinish(); // Publish uploads before the other context samples the shared texture.
         hasLatestVideoFrame = true;
     }
 
@@ -1415,7 +1427,6 @@ void ofApp::uploadProcessedPixels(const ofPixels &pixels) {
         processedTexture.allocate(width, height, GL_RGB);
     }
     processedTexture.loadData(pixels);
-    glFinish();
     hasProcessedFrame = true;
 }
 
@@ -1441,410 +1452,146 @@ void ofApp::drawVideo() {
             processedTexture.draw(x, y, drawWidth, drawHeight);
         }
     }
-    // Finish reads before the processing context can replace the shared image.
-    glFinish();
 }
 
 void ofApp::draw() {
-    ofBackground(12, 14, 18);
-    ofSetColor(235);
-    saveConfigButton.set(28, 55, 140, 27);
-    ofDrawRectangle(saveConfigButton);
-    ofSetColor(12, 14, 18);
-    ofDrawBitmapString("Save config", 48, 74);
-    ofSetColor(235);
-    ofDrawBitmapString("settings.toml: " + settingsStatus, 28, 104);
-    hysteresisToggle.set(28, 155, 275, 27);
-    ofSetColor(hysteresisThresholding ? ofColor(72, 95, 115) : ofColor(38, 42, 48));
-    ofDrawRectangle(hysteresisToggle);
-    ofSetColor(235);
-    ofDrawBitmapString(std::string(hysteresisThresholding ? "[x]" : "[ ]") +
-                           " Hysteresis thresholding", 35, 173);
-    polygonGateToggle.set(318, 155, 275, 27);
-    ofSetColor(polygonGate ? ofColor(72, 95, 115) : ofColor(38, 42, 48));
-    ofDrawRectangle(polygonGateToggle);
-    ofSetColor(235);
-    ofDrawBitmapString(std::string(polygonGate ? "[x]" : "[ ]") + " Polygon gate", 325, 173);
-    ofDrawBitmapString("Polygon detail", 610, 173);
-    polygonDetailField.set(735, 155, 95, 27);
-    const bool editingDetail = editingFloatInput == FloatInput::PolygonDetail;
-    ofSetColor(editingDetail ? ofColor(72, 95, 115) : ofColor(38, 42, 48));
-    ofDrawRectangle(polygonDetailField);
-    ofNoFill();
-    ofSetColor(115, 125, 138);
-    ofDrawRectangle(polygonDetailField);
-    ofFill();
-    ofSetColor(235);
-    ofDrawBitmapString(editingDetail ? floatInputText : ofToString(polygonDetail, 2),
-                       polygonDetailField.x + 7, polygonDetailField.y + 18);
-    ofSetColor(155);
-    ofDrawBitmapString("0-100", polygonDetailField.getRight() + 10, 173);
-    objectCutoutToggle.set(890, 155, 180, 27);
-    ofSetColor(objectCutout ? ofColor(72, 95, 115) : ofColor(38, 42, 48));
-    ofDrawRectangle(objectCutoutToggle);
-    ofSetColor(235);
-    ofDrawBitmapString(std::string(objectCutout ? "[x]" : "[ ]") + " Object cutout", 897, 173);
-    ofSetColor(235);
-
-    if (sources.empty()) {
-        ofDrawBitmapString(renderStatus, 28, 135);
-        return;
+    drawVideo();
+    if (sources.empty() || !player.isLoaded()) {
+        ofSetColor(235);
+        ofDrawBitmapString("No video loaded. Open http://127.0.0.1:8190 for controls.", 20, 30);
     }
+}
 
-    ofSetColor(235);
-    const std::string layerName = layerModeName();
-    const std::string videoName = std::filesystem::path(sources[selectedVideo].path).filename().string();
-    const std::string fpsLabel = useSixtyFps
-                                     ? "60 FPS"
-                                     : "Source FPS " + ofToString(sources[selectedVideo].averageFps, 2);
+void ofApp::selectMode(const std::string &mode) {
+    if (!InteractiveConfig::validMode(mode)) throw std::runtime_error("unknown layer");
+    if (mode == layerModeName()) return;
+    sessionSettings[layerModeName()] = currentSettings();
+    const auto saved = sessionSettings.find(mode);
+    auto settings = saved != sessionSettings.end() ? saved->second :
+        interactiveConfig.global.empty() ? currentSettings() : interactiveConfig.resolve(mode);
+    settings.mode = mode;
+    settings.boidTuning = boidTuning;
+    applySettings(settings);
+    controlsDirty = true;
+}
+
+ofJson ofApp::controlsSnapshot() {
+    ofJson settings = ofJson::object();
+    for (const auto &line : narrowToml::lines(currentSettings().serialize()))
+        settings[line.key] = ofJson::parse(line.value);
+    for (const auto &line : narrowToml::lines(boidTuning.serialize()))
+        settings[line.key] = ofJson::parse(line.value);
+    ofJson videos = ofJson::array();
+    for (std::size_t i = 0; i < sources.size(); ++i)
+        videos.push_back({{"index", i}, {"label", sources[i].label},
+            {"fps", sources[i].averageFps}, {"path", sources[i].path}});
     const std::size_t bakedCount =
         (bakedVertices.size() - bakedStart) / std::max<std::size_t>(1, bakedVerticesPerTraveller);
-    std::string traceCount = "Traces " + ofToString(travellingPixels.size()) + "/" +
-                             ofToString(maxTravellers) + "  baked " + ofToString(bakedCount) +
-                             "/" + ofToString(maxBakedTravellers);
-    if (travellingPixels.size() >= maxTravellers) {
-        traceCount += " FULL";
+    return {{"type", "state"}, {"sequence", ++webSequence}, {"settings", settings},
+        {"sources", videos}, {"selectedVideo", selectedVideo},
+        {"videoLoaded", player.isLoaded()}, {"dirty", controlsDirty},
+        {"settingsStatus", settingsStatus}, {"renderStatus", renderStatus},
+        {"savedSpecs", sources.empty() ? 0 : savedSpecCount(selectedVideo)},
+        {"metrics", {{"fps", ofGetFrameRate()}, {"width", player.getWidth()},
+            {"height", player.getHeight()}, {"travellers", travellingPixels.size()},
+            {"maxTravellers", maxTravellers}, {"baked", bakedCount},
+            {"maxBaked", maxBakedTravellers}}}};
+}
+
+void ofApp::publishWebState(bool force) {
+    if (!webControls) return;
+    const double now = ofGetElapsedTimef();
+    if (!force && now < nextWebPublish) return;
+    nextWebPublish = now + 0.2;
+    webControls->publish(controlsSnapshot().dump());
+}
+
+void ofApp::processWebCommands() {
+    if (!webControls) return;
+    for (const auto &command : webControls->drain()) {
+        ofJson id = nullptr;
+        ofJson result = {{"type", "result"}, {"ok", false}};
+        try {
+            const auto message = ofJson::parse(command.text);
+            if (!message.is_object() || !message.contains("id") ||
+                !message["id"].is_number_unsigned() || !message.contains("action") ||
+                !message["action"].is_string())
+                throw std::runtime_error("expected a command with numeric id and action");
+            id = message["id"];
+            const std::string action = message["action"];
+            if (action == "settings") {
+                if (message.value("targetMode", "") != layerModeName())
+                    throw std::runtime_error("Layer changed; retry your edit on the selected layer.");
+                const auto &patch = message.at("values");
+                if (!patch.is_object() || patch.empty()) throw std::runtime_error("expected settings values");
+                auto values = InteractiveConfig::scalars(currentSettings());
+                std::map<std::string, std::string> tuning;
+                for (const auto &line : narrowToml::lines(boidTuning.serialize())) tuning[line.key] = line.value;
+                for (auto field = patch.begin(); field != patch.end(); ++field) {
+                    auto &target = BoidSettings::isKey(field.key()) ? tuning : values;
+                    const auto found = target.find(field.key());
+                    if (found == target.end() || field.key() == "mode")
+                        throw std::runtime_error("unknown setting: " + field.key());
+                    const auto existing = ofJson::parse(found->second);
+                    if ((existing.is_boolean() && !field->is_boolean()) ||
+                        (existing.is_string() && !field->is_string()) ||
+                        (existing.is_number() && !field->is_number()))
+                        throw std::runtime_error("wrong type for " + field.key());
+                    found->second = field->dump();
+                }
+                auto settings = InteractiveSettings::parse(InteractiveConfig::flat(values));
+                settings.boidTuning = BoidSettings::parse(tuning);
+                applySettings(settings);
+                controlsDirty = true;
+            } else if (action == "mode") {
+                selectMode(message.at("mode").get<std::string>());
+            } else if (action == "video") {
+                if (!message.at("index").is_number_unsigned()) throw std::runtime_error("invalid video index");
+                const auto index = message["index"].get<std::size_t>();
+                if (index >= sources.size()) throw std::runtime_error("video index out of range");
+                loadVideo(index);
+                if (!player.isLoaded()) throw std::runtime_error("Could not load video; see obj/app.log.");
+            } else if (action == "saveConfig") {
+                saveSettings();
+                if (settingsStatus.rfind("Saved ", 0) != 0) throw std::runtime_error(settingsStatus);
+            } else if (action == "saveSpec") {
+                if (!saveRenderSpecs()) throw std::runtime_error(renderStatus.empty() ? "No video selected" : renderStatus);
+            } else {
+                throw std::runtime_error("unknown action");
+            }
+            result["ok"] = true;
+        } catch (const std::exception &error) {
+            result["error"] = error.what();
+        }
+        result["id"] = id;
+        result["state"] = controlsSnapshot();
+        webControls->reply(command.client, result.dump());
+        publishWebState(true);
     }
-    ofDrawBitmapString("" + ofToString(selectedVideo + 1) + "  " + videoName +
-                           "   |   " + layerName + "   |   Offset: " +
-                           ofToString(frameOffset) + " frames   |   " + fpsLabel +
-                           "   |   Saved specs: " +
-                           ofToString(savedSpecCount(selectedVideo)),
-                       28, ofGetHeight() - 185);
-    ofDrawBitmapString(traceCount, 665, ofGetHeight() - 150);
-    ofSetColor(155);
-    drawPixelControls();
-    ofDrawBitmapString("[ / ]: previous / next video    Left / Right: layer    Up / Down: offset    F: source / 60 FPS",
-                       28, ofGetHeight() - 28);
-    if (!renderStatus.empty()) {
-        ofSetColor(235);
-        ofDrawBitmapString(renderStatus, 28, 24);
-    }
-    // Drawn last so the open list covers the video and other controls.
-    drawTreatmentMenu();
 }
 
 void ofApp::keyPressed(int key) {
     processingWindow->makeCurrent();
-    if (editingFloatInput != FloatInput::None) {
-        if (key == OF_KEY_RETURN) {
-            if (!floatInputText.empty()) {
-                char *end = nullptr;
-                const float enteredValue = std::strtof(floatInputText.c_str(), &end);
-                if (end != floatInputText.c_str() && *end == '\0' &&
-                    std::isfinite(enteredValue)) {
-                    if (editingFloatInput == FloatInput::PixelFade) {
-                        pixelFadePercent = enteredValue;
-                        if (pixelFadePercent > 0.0f) bakeStoppedPixels = false;
-                    } else if (editingFloatInput == FloatInput::FlightStrength) {
-                        pixelFlightStrength = enteredValue;
-                    } else if (editingFloatInput == FloatInput::PolygonDetail) {
-                        polygonDetail = std::clamp(enteredValue, 0.0f, 100.0f);
-                    } else if (editingFloatInput == FloatInput::SpeedContrast) {
-                        speedContrast = std::clamp(enteredValue, 0.0f, 100.0f);
-                    } else {
-                        trailSpeedFactor = enteredValue;
-                    }
-                }
-            }
-            editingFloatInput = FloatInput::None;
-            floatInputText.clear();
-            return;
-        }
-        if (key == OF_KEY_ESC) {
-            editingFloatInput = FloatInput::None;
-            floatInputText.clear();
-            return;
-        }
-        if (key == OF_KEY_BACKSPACE || key == OF_KEY_DEL) {
-            if (!floatInputText.empty()) {
-                floatInputText.pop_back();
-            }
-            return;
-        }
-        if (key >= '0' && key <= '9') {
-            floatInputText.push_back(static_cast<char>(key));
-            return;
-        }
-        if ((key == '-' || key == '+') && floatInputText.empty()) {
-            floatInputText.push_back(static_cast<char>(key));
-            return;
-        }
-        if (key == '.' && floatInputText.find('.') == std::string::npos) {
-            floatInputText.push_back(static_cast<char>(key));
-            return;
-        }
-        return;
-    }
-
-    if (sources.empty()) {
-        return;
-    }
+    if (sources.empty()) return;
     if (key == '[' || key == ']') {
         loadVideo(key == ']' ? (selectedVideo + 1) % sources.size()
                              : (selectedVideo + sources.size() - 1) % sources.size());
-        return;
-    }
-
-    if (key == OF_KEY_LEFT || key == OF_KEY_RIGHT) {
-        const int layerCount = 6;
-        const int currentLayer = static_cast<int>(layerMode);
+    } else if (key == OF_KEY_LEFT || key == OF_KEY_RIGHT) {
         const int direction = key == OF_KEY_RIGHT ? 1 : -1;
-        const int nextLayer = (currentLayer + direction + layerCount) % layerCount;
-        sessionSettings[layerModeName()] = currentSettings();
-        layerMode = static_cast<LayerMode>(nextLayer);
-        const auto mode = layerModeName();
-        const auto saved = sessionSettings.find(mode);
-        if (!interactiveConfig.global.empty()) {
-            applySettings(saved == sessionSettings.end() ? interactiveConfig.resolve(mode) : saved->second);
-        }
-        hasProcessedFrame = false;
-        if (layerMode == LayerMode::InvertedGrayscale ||
-            layerMode == LayerMode::DisplacementMap ||
-            layerMode == LayerMode::DisplacedVideo) {
-            invertedLayerInitialized = false;
-            clearTravellers();
-        }
-        return;
-    }
-    if (key == 'f') {
-        useSixtyFps = !useSixtyFps;
-        applyTargetFrameRate();
-        hasProcessedFrame = false;
-        return;
-    }
-
-    if (key == OF_KEY_UP && frameOffset < 120) {
-        ++frameOffset;
-        sourceFrameHistory.clear();
-        hasProcessedFrame = false;
-    } else if (key == OF_KEY_DOWN && frameOffset > 0) {
-        --frameOffset;
-        sourceFrameHistory.clear();
-        hasProcessedFrame = false;
-    }
-}
-
-void ofApp::drawPixelControls() {
-    const float y = ofGetHeight() - 135;
-    fadeValueField.set(205, y + 2, 95, 27);
-    flightStrengthField.set(440, y + 2, 95, 27);
-    trailSpeedFactorField.set(700, y + 2, 105, 27);
-    speedContrastField.set(205, y - 33, 95, 27);
-    bakeToggle.set(445, y - 33, 210, 27);
-    saveSpecsButton.set(850, y + 2, 125, 27);
-    treatmentField.set(205, y + 37, 125, 27);
-    particlesToggle.set(345, y + 37, 230, 27);
-    particlesOnlyToggle.set(590, y + 37, 170, 27);
-    boidsToggle.set(775, y + 37, 95, 27);
-
-    ofSetColor(235);
-    ofDrawBitmapString("Pixel fade (% / frame)", 28, y + 20);
-    ofDrawBitmapString("Speed contrast", 28, y - 15);
-    ofDrawBitmapString("Flight strength", 320, y + 20);
-    ofDrawBitmapString("Trail speed factor", 540, y + 20);
-    ofDrawBitmapString("Pixel treatment", 28, y + 55);
-
-    const auto drawField = [](const ofRectangle &rect, const std::string &value,
-                              bool selected) {
-        ofSetColor(selected ? ofColor(72, 95, 115) : ofColor(38, 42, 48));
-        ofDrawRectangle(rect);
-        ofNoFill();
-        ofSetColor(115, 125, 138);
-        ofDrawRectangle(rect);
-        ofFill();
-        ofSetColor(235);
-        ofDrawBitmapString(value, rect.x + 7, rect.y + 18);
-    };
-
-    const std::string fadeValue = editingFloatInput == FloatInput::PixelFade
-                                      ? floatInputText
-                                      : ofToString(pixelFadePercent, 2);
-    const std::string flightValue = editingFloatInput == FloatInput::FlightStrength
-                                        ? floatInputText
-                                        : ofToString(pixelFlightStrength, 2);
-    const std::string trailSpeedFactorValue =
-        editingFloatInput == FloatInput::TrailSpeedFactor
-            ? floatInputText
-            : ofToString(trailSpeedFactor, 2);
-    drawField(fadeValueField, fadeValue, editingFloatInput == FloatInput::PixelFade);
-    drawField(flightStrengthField, flightValue,
-              editingFloatInput == FloatInput::FlightStrength);
-    drawField(trailSpeedFactorField, trailSpeedFactorValue,
-              editingFloatInput == FloatInput::TrailSpeedFactor);
-    drawField(speedContrastField,
-              editingFloatInput == FloatInput::SpeedContrast ? floatInputText
-                                                             : ofToString(speedContrast, 2),
-              editingFloatInput == FloatInput::SpeedContrast);
-    ofSetColor(155);
-    ofDrawBitmapString("0-100, 0 = off", speedContrastField.getRight() + 15,
-                       speedContrastField.y + 18);
-    drawField(bakeToggle,
-              std::string(bakeStoppedPixels ? "[x]" : "[ ]") + " Bake stopped pixels",
-              bakeStoppedPixels);
-    // Baking only exists at fade 0, so the toggle is dimmed and inert above it.
-    if (pixelFadePercent > 0.0f) {
-        ofEnableAlphaBlending();
-        ofSetColor(12, 14, 18, 170);
-        ofDrawRectangle(bakeToggle);
-    }
-    drawField(treatmentField, pixelTreatmentName(pixelTreatment), treatmentMenuOpen);
-    ofSetColor(235);
-    ofDrawTriangle(treatmentField.getRight() - 18, treatmentField.y + 11,
-                   treatmentField.getRight() - 8, treatmentField.y + 11,
-                   treatmentField.getRight() - 13, treatmentField.y + 17);
-    drawField(particlesToggle,
-              std::string(colouredParticles ? "[x]" : "[ ]") + " Coloured particles",
-              colouredParticles);
-    drawField(particlesOnlyToggle,
-              std::string(particlesOnly ? "[x]" : "[ ]") + " Particles only", particlesOnly);
-    drawField(boidsToggle, std::string(boids ? "[x]" : "[ ]") + " Boids", boids);
-    ofSetColor(155);
-    ofDrawBitmapString(colouredParticles ? "Layers push pixels" : "Layers pull via field",
-                       boidsToggle.getRight() + 15, boidsToggle.y + 18);
-    ofSetColor(48, 87, 67);
-    ofDrawRectangle(saveSpecsButton);
-    ofNoFill();
-    ofSetColor(115, 165, 130);
-    ofDrawRectangle(saveSpecsButton);
-    ofFill();
-    ofSetColor(245);
-    ofDrawBitmapString("Save specs", saveSpecsButton.x + 24, saveSpecsButton.y + 18);
-    ofSetColor(155);
-    ofDrawBitmapString("Positive trail speed factor shortens trails more at higher speeds. Click a value, type a float, then Enter. Esc cancels.",
-                       28, ofGetHeight() - 50);
-}
-
-ofRectangle ofApp::treatmentOptionRect(std::size_t index) const {
-    // The list opens upward because the field sits near the bottom of the window.
-    constexpr std::size_t optionCount = 3;
-    return ofRectangle(treatmentField.x,
-                       treatmentField.y - (optionCount - index) * treatmentField.height,
-                       treatmentField.width, treatmentField.height);
-}
-
-void ofApp::drawTreatmentMenu() {
-    if (!treatmentMenuOpen) {
-        return;
-    }
-    const PixelTreatment options[] = {PixelTreatment::Smear, PixelTreatment::Streak,
-                                      PixelTreatment::Stretch};
-    for (std::size_t index = 0; index < 3; ++index) {
-        const ofRectangle rect = treatmentOptionRect(index);
-        const bool hovered = rect.inside(ofGetMouseX(), ofGetMouseY());
-        ofSetColor(options[index] == pixelTreatment ? ofColor(72, 95, 115)
-                   : hovered                         ? ofColor(55, 62, 72)
-                                                     : ofColor(38, 42, 48));
-        ofDrawRectangle(rect);
-        ofNoFill();
-        ofSetColor(115, 125, 138);
-        ofDrawRectangle(rect);
-        ofFill();
-        ofSetColor(235);
-        ofDrawBitmapString(pixelTreatmentName(options[index]), rect.x + 7, rect.y + 18);
-    }
-}
-
-void ofApp::mousePressed(int x, int y, int button) {
-    processingWindow->makeCurrent();
-    if (button != OF_MOUSE_BUTTON_LEFT) {
-        return;
-    }
-    if (saveConfigButton.inside(x, y)) {
-        saveSettings();
-        return;
-    }
-    if (hysteresisToggle.inside(x, y)) {
+        const auto next = static_cast<LayerMode>((static_cast<int>(layerMode) + direction + 6) % 6);
+        const auto mode = layerMode;
+        layerMode = next;
+        const auto name = layerModeName();
+        layerMode = mode;
+        selectMode(name);
+    } else if (key == 'f' || key == OF_KEY_UP || key == OF_KEY_DOWN) {
         auto settings = currentSettings();
-        settings.hysteresisThresholding = !settings.hysteresisThresholding;
+        if (key == 'f') settings.useSixtyFps = !settings.useSixtyFps;
+        else settings.frameOffset = std::clamp(settings.frameOffset + (key == OF_KEY_UP ? 1 : -1), 0, 120);
         applySettings(settings);
-        return;
+        controlsDirty = true;
     }
-    if (polygonDetailField.inside(x, y)) {
-        editingFloatInput = FloatInput::PolygonDetail;
-        floatInputText.clear();
-        return;
-    }
-    if (objectCutoutToggle.inside(x, y)) {
-        auto settings = currentSettings();
-        settings.objectCutout = !settings.objectCutout;
-        applySettings(settings);
-        return;
-    }
-    if (polygonGateToggle.inside(x, y)) {
-        auto settings = currentSettings();
-        settings.polygonGate = !settings.polygonGate;
-        applySettings(settings);
-        return;
-    }
-    if (sources.empty()) return;
-    if (treatmentMenuOpen) {
-        const PixelTreatment options[] = {PixelTreatment::Smear, PixelTreatment::Streak,
-                                          PixelTreatment::Stretch};
-        for (std::size_t index = 0; index < 3; ++index) {
-            if (treatmentOptionRect(index).inside(x, y)) {
-                pixelTreatment = options[index];
-                clearBaked();
-            }
-        }
-        treatmentMenuOpen = false;
-        return;
-    }
-    if (treatmentField.inside(x, y)) {
-        editingFloatInput = FloatInput::None;
-        floatInputText.clear();
-        treatmentMenuOpen = true;
-        return;
-    }
-    if (particlesToggle.inside(x, y)) {
-        editingFloatInput = FloatInput::None;
-        floatInputText.clear();
-        colouredParticles = !colouredParticles;
-        invertedLayerInitialized = false;
-        clearTravellers();
-        return;
-    }
-    if (particlesOnlyToggle.inside(x, y)) {
-        editingFloatInput = FloatInput::None;
-        floatInputText.clear();
-        particlesOnly = !particlesOnly;
-        // Drop old smear paint so the switch shows at once.
-        if (particlesOnly && displacedVideoPixels.isAllocated()) {
-            std::memset(displacedVideoPixels.getData(), 0, displacedVideoPixels.size());
-        }
-        return;
-    }
-    if (bakeToggle.inside(x, y)) {
-        editingFloatInput = FloatInput::None;
-        floatInputText.clear();
-        if (pixelFadePercent <= 0.0f) {
-            bakeStoppedPixels = !bakeStoppedPixels;
-            clearBaked();
-        }
-        return;
-    }
-    if (boidsToggle.inside(x, y)) {
-        editingFloatInput = FloatInput::None;
-        floatInputText.clear();
-        boids = !boids;
-        return;
-    }
-    if (saveSpecsButton.inside(x, y)) {
-        editingFloatInput = FloatInput::None;
-        floatInputText.clear();
-        saveRenderSpecs();
-    } else if (fadeValueField.inside(x, y)) {
-        editingFloatInput = FloatInput::PixelFade;
-    } else if (flightStrengthField.inside(x, y)) {
-        editingFloatInput = FloatInput::FlightStrength;
-    } else if (trailSpeedFactorField.inside(x, y)) {
-        editingFloatInput = FloatInput::TrailSpeedFactor;
-    } else if (speedContrastField.inside(x, y)) {
-        editingFloatInput = FloatInput::SpeedContrast;
-    } else {
-        editingFloatInput = FloatInput::None;
-    }
-    floatInputText.clear();
+    publishWebState(true);
 }
 
 bool ofApp::renderJob(std::size_t videoIndex, std::size_t specIndex,

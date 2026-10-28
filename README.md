@@ -10,15 +10,55 @@ From this directory, rebuild, quit the open interactive app, and relaunch it:
 make dev
 ```
 
-`make dev` only quits the interactive instance; headless renders keep running.
+Open **http://127.0.0.1:8190** for the Vue controls.
+The app opens one **CCTV Video** window for the selected layer; the browser has controls only.
+`make dev` installs the pinned frontend packages, builds the Vue assets and native app, then replaces only the interactive instance; headless renders keep running.
+Node.js 22.12+ is needed to build the controls, not to run them once built.
 App output goes to `obj/app.log`.
 
 ## Windows and live settings
 
-The interactive app opens **CCTV Controls** and a separate **CCTV Video** window.
-The video window contains only the selected layer, fitted to the window with black letterboxing; all controls and status stay in the controls window. Focus the controls window for keyboard shortcuts. Closing either window quits the interactive app.
+The browser uses Baza's monochrome panel arrangement: source and configuration on the left, selected-layer controls in the middle, and shared flocking tuning plus runtime counts on the right.
+Groups collapse independently and panel bodies scroll on desktop; smaller windows stack the panels.
+Switch between light and dark themes in the header.
+The video window fits the selected layer with black letterboxing.
+Focus that native window for the existing keyboard shortcuts.
+Closing it quits the app; closing a browser tab leaves playback running.
 
-Edit `bin/data/settings.toml` while the app runs. It checks file contents every 250 ms and applies a change after two identical reads (normally within half a second). The entire file must validate before any value changes. Invalid or missing files leave the current settings running and show an actionable error in the controls window and `obj/app.log`. Fixing the file resumes reload automatically, including editor saves that replace the file by rename.
+Controls apply live over a local WebSocket and are confirmed by the app.
+Numeric fields accept typed values on Enter or blur; Escape restores the current value.
+Use the minus/plus buttons or drag a numeric label horizontally to adjust it; hold Shift for finer dragging.
+Controls that do not apply to the selected layer are disabled.
+Shared boid tuning stays editable across layers.
+Disconnected controls are disabled, reconnect automatically and refresh from the app; unconfirmed commands are not replayed.
+Use **Save config** for interactive persistence and **Add render spec** to append an offline job.
+
+The app serves the compiled frontend and `/ws` from loopback port 8190 using the installed Poco binary through `local-addons/ofxWebControls`.
+The local addon avoids the bundled `ofxPoco` source scanner compiling PDF implementation files from its XCFramework headers.
+Only the built interface assets are served; settings, media and queue files are not HTTP routes.
+A port conflict is reported in `obj/app.log` and exits startup.
+
+For Vue development with hot reload, keep the native app running and use:
+
+```sh
+npm --prefix ui run dev
+```
+
+Open the Vite URL at **http://127.0.0.1:5173**; its WebSocket proxy connects to the native app.
+Run `make controls` to rebuild the assets served on port 8190 after frontend changes.
+
+With the native app running, run the repeatable integration check:
+
+```sh
+npm --prefix ui test
+```
+
+It exercises the real HTTP server and WebSocket command path, including invalid edits, layer switching, multi-client state updates, reconnection snapshots and origin checks.
+It restores the settings and layer it changes, and checks that both TOML files remain byte-for-byte unchanged.
+Run it while nobody is editing controls: switching effect layers resets their particle simulation and marks session settings as unsaved.
+
+
+Edit `bin/data/settings.toml` while the app runs. It checks file contents every 250 ms and applies a change after two identical reads (normally within half a second). The entire file must validate before any value changes. Invalid or missing files leave the current settings running and show an actionable error in the browser controls and `obj/app.log`. Fixing the file resumes reload automatically, including editor saves that replace the file by rename.
 
 Click **Save config** to explicitly write the current controls to `settings.toml` using a temporary file and rename. UI changes are otherwise session-only; the next valid external edit replaces them. Save refuses a pending/unseen external edit: wait for reload, review the controls, then save again. Saving replaces comments and formatting. Restore a missing file in your editor before saving from the app.
 
@@ -88,9 +128,12 @@ Shared `[boids]` tuning accepts the following optional keys. Missing keys, or a 
 
 Tuning changes hot-apply to all modes without resetting existing particles. As with other settings, every table and mode must validate before a reload applies; an invalid tuning value leaves the entire current configuration running.
 
-Interactive values persist when switching videos; startup no longer takes effect parameters from the last saved render spec. **Save specs** remains separate: it appends a snapshot, including all seven shared boid tuning values as flat fields, to the TOML render queue. `--render` reads only that queue and ignores `settings.toml`, so later interactive tuning changes do not change saved renders. The remaining traveller constants (traveller limit, stop speed and minimum flow) stay compile-time in `src/ParticleTuning.h`.
+Interactive values persist when switching videos; startup no longer takes effect parameters from the last saved render spec. **Add render spec** remains separate: it appends a snapshot, including all seven shared boid tuning values as flat fields, to the TOML render queue. `--render` reads only that queue and ignores `settings.toml`, so later interactive tuning changes do not change saved renders. The remaining traveller constants (traveller limit, stop speed and minimum flow) stay compile-time in `src/ParticleTuning.h`.
 
-Playback, simulation (once per update tick), texture uploads and particle FBO work run only in the controls window's GL 2.1 context. The video window shares textures and only draws them; it never updates the player or particles. Both windows use the same main thread, with explicit synchronization for shared texture writes/reads. The controls context is also made current for input-triggered video changes and resource cleanup.
+Playback, simulation (once per update tick), texture uploads, particle FBO work and presentation use the native video window's GL 2.1 context on the main thread.
+Network threads exchange bounded text commands and snapshots only.
+The app drains commands in `update()`, validates complete settings before applying them and publishes state at most every 200 ms plus command confirmations.
+The video context is made current for input-triggered video changes and resource cleanup.
 
 ## Controls
 
@@ -128,9 +171,9 @@ At offset 0 nothing moves: the displaced video equals the source, the displaceme
 Sources are slower than the 60 FPS output, so the motion measured on one source frame is fed in evenly over the output frames until the next source frame.
 Without that, fast fades pulse at the source frame rate.
 - Press `F` to switch between source frame rate and 60 FPS.
-- Click a float field, type a value, then press Enter to apply it; press Esc to cancel.
+- Type a numeric value and press Enter or leave the field to apply it; press Esc to cancel.
 - A positive trail speed factor makes higher-speed pixels leave shorter trails; zero preserves the old speed-to-length calculation.
-- Click **Save specs** to append the current settings and selected layer mode for the selected video to `bin/data/render-specs.toml`.
+- Click **Add render spec** to append the current settings and selected layer mode for the selected video to `bin/data/render-specs.toml`.
 - The app shows how many specs are saved for the selected video, and each save gets the next `Spec NN` name.
 - Saved specs render at 60 FPS and retain their selected mode.
 
@@ -140,7 +183,7 @@ The displacement map stores signed horizontal offsets in red and signed vertical
 Channel values of 128 are neutral, values above 128 move one direction, and values below 128 move the other.
 Blue stores displacement magnitude for inspection or masking.
 The **Displaced video** layer applies the map to the original video with edge replication.
-The **Pixel treatment** dropdown picks how it does that, and saved specs store it as `treatment`:
+The **Pixel treatment** buttons picks how it does that, and saved specs store it as `treatment`:
 
 - `smear` warps the previous output again and blends it in with decaying feedback, so moved pixels drag paint behind them.
 - `streak` averages 12 samples of the current frame along each pixel's displacement path, which draws lines along the motion.
@@ -193,9 +236,9 @@ To render the map itself, save a spec with the displacement map layer selected.
 
 `bin/data/render-specs.toml` is the editable render queue.
 Only videos and specs listed in that file are rendered; videos omitted from it are skipped.
-Clicking **Save specs** appends only the current settings for the selected video and preserves the rest of the queue.
+Clicking **Add render spec** appends only the current settings for the selected video and preserves the rest of the queue.
 Remove a spec or a video entry from the TOML to keep it out of the next render.
-An empty or comments-only TOML file is a cleared queue: rendering has no jobs, and **Save specs** starts a new queue with the current spec. It does not reload entries from legacy JSON. Other non-empty queues still require `version = 1` and valid entries.
+An empty or comments-only TOML file is a cleared queue: rendering has no jobs, and **Add render spec** starts a new queue with the current spec. It does not reload entries from legacy JSON. Other non-empty queues still require `version = 1` and valid entries.
 
 ### Queue schema and migration
 
@@ -235,7 +278,7 @@ speedContrast = 0
 bakeStoppedPixels = false
 ```
 
-Spec fields are optional for historical compatibility: defaults are the example above except `fadePercent = 15`. The optional booleans `hysteresisThresholding`, `polygonGate`, `objectCutout` and `bakeStoppedPixels` default to `false` and `polygonDetail` and `speedContrast` (0–100) default to `0` for existing specs; `true` enables the same shared motion gate steps described above. `name` is preserved metadata; CLI selection and filenames use queue position. Render `trailSpeedFactor` accepts finite nonnegative values, including existing values above the interactive limit of 100. `flightStrength` accepts any finite float, `fps` must be positive, `fadePercent` is 0–100 and `frameOffset` is an integer 0–120. Modes, treatments and booleans use the same choices as above. The seven optional boid tuning fields are flat keys in each `[[videos.specs]]`, not a `[boids]` table; they use the same types and ranges as the interactive tuning table. Each omitted tuning field uses its original default above, independently of interactive settings and other specs. **Save specs** captures all seven values even when `boids = false`; the boolean remains the enable switch. Queue strings additionally accept JSON-compatible double-quoted escapes (for paths/names); other TOML string forms remain unsupported. Unknown fields are rejected rather than silently discarded. Validation covers the entire queue, including unavailable videos; a malformed queue aborts rendering or Save specs with an error.
+Spec fields are optional for historical compatibility: defaults are the example above except `fadePercent = 15`. The optional booleans `hysteresisThresholding`, `polygonGate`, `objectCutout` and `bakeStoppedPixels` default to `false` and `polygonDetail` and `speedContrast` (0–100) default to `0` for existing specs; `true` enables the same shared motion gate steps described above. `name` is preserved metadata; CLI selection and filenames use queue position. Render `trailSpeedFactor` accepts finite nonnegative values, including existing values above the interactive limit of 100. `flightStrength` accepts any finite float, `fps` must be positive, `fadePercent` is 0–100 and `frameOffset` is an integer 0–120. Modes, treatments and booleans use the same choices as above. The seven optional boid tuning fields are flat keys in each `[[videos.specs]]`, not a `[boids]` table; they use the same types and ranges as the interactive tuning table. Each omitted tuning field uses its original default above, independently of interactive settings and other specs. **Add render spec** captures all seven values even when `boids = false`; the boolean remains the enable switch. Queue strings additionally accept JSON-compatible double-quoted escapes (for paths/names); other TOML string forms remain unsupported. Unknown fields are rejected rather than silently discarded. Validation covers the entire queue, including unavailable videos; a malformed queue aborts rendering or Save specs with an error.
 
 When a requested `.toml` queue is absent, the app looks for the same basename with `.json`, validates and converts it to TOML, and retains the original unchanged. This also supports the historical single-spec video shape. Existing TOML always wins, even when invalid: there is no fallback to stale JSON. Save specs re-reads the complete queue and atomically replaces it after appending, preserving every existing entry, field, custom name and ordering, including unavailable videos. Comments and formatting are normalized. Render runs archive the TOML queue next to their output.
 

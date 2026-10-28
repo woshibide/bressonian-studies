@@ -19,7 +19,9 @@ Keep source footage unchanged and put generated media under `bin/data` or the sh
 
 ## Interactive architecture
 
-- Keep playback, simulation updates, texture uploads and `ParticleCanvas` resources on the controls window's GL context. The video window shares textures for presentation only; it must not advance simulation. Make the owner context current for input-triggered GL work and cleanup.
+- Keep playback, simulation updates, texture uploads, presentation and `ParticleCanvas` resources on the single native video window's GL context.
+  Make the owner context current for input-triggered GL work and cleanup.
+  The Vue controls use WebSocket messages; network threads exchange text only, and the app validates and applies commands on its update thread.
 - For configuration or queue changes, read the narrow TOML schemas and save semantics in `README.md`. Interactive `settings.toml` has complete `[global]` defaults and partial per-layer overrides. Validate every mode before applying a snapshot; retain current values and report reload errors in controls. Explicit Save config guards external edits and saves the selected mode without changing other modes' effective values.
 - Keep interactive settings separate from offline `render-specs.toml`: render jobs read only the queue, never interactive settings. Preserve all queue entries and fields when appending, including unavailable videos. Migrate legacy JSON only when TOML is absent; retain the original and prefer TOML thereafter. Interactive settings persist across video changes.
 

@@ -17,12 +17,18 @@ APP_EXE = bin/$(APPNAME).app/Contents/MacOS/$(APPNAME)
 RENDER_ARGS = $(if $(PARALLEL),--jobs $(PARALLEL)) $(if $(FRAMES),--frames $(FRAMES)) \
 	$(if $(ONLY),--only $(ONLY)) $(if $(OUT),--out $(OUT)) $(if $(SPECS),--specs $(SPECS))
 
-.PHONY: dev stop render
+.PHONY: dev stop render controls
 
 # Rebuild, quit the interactive app, and relaunch it. Headless renders keep running.
-dev: Release stop
+dev: controls Release stop
 	@$(APP_EXE) > obj/app.log 2>&1 &
 	@echo "launched $(APPNAME); log: obj/app.log"
+	@echo "controls: http://127.0.0.1:8190"
+
+# Build local Vue assets; the native app serves these without a Node server.
+controls:
+	@npm --prefix ui ci --no-audit --no-fund
+	@npm --prefix ui run build
 
 # Matches only the interactive instance, which has no arguments.
 stop:

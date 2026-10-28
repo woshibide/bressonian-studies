@@ -1,0 +1,13 @@
+{
+  "name": "cctv-controls",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "build": "vite build",
+    "test": "node --test test/controls.integration.test.mjs"
+  },
+  "dependencies": { "vue": "3.5.43" },
+  "devDependencies": { "@vitejs/plugin-vue": "6.0.9", "vite": "8.3.0" }
+}

@@ -12,3 +12,5 @@
 /.vscode/browse.db*
 /.vscode/*.lock
 /.claude/settings.local.json
+/ui/node_modules/
+/bin/data/controls/

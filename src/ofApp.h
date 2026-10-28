@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ParticleCanvas.h"
+#include "WebControls.h"
 #include "InteractiveSettings.h"
 #include "ofMain.h"
 #include <opencv2/core.hpp>
@@ -19,10 +20,9 @@ public:
     void update() override;
     void draw() override;
     void exit() override;
-    // Presentation only; called by the second window, never advances simulation.
+    // Presentation uses the same GL context as playback and processing.
     void drawVideo();
     void keyPressed(int key) override;
-    void mousePressed(int x, int y, int button) override;
 
     // Renders the TOML queue without a window; returns the process exit code.
     static int runRenderCommand(const std::vector<std::string> &args);
@@ -43,15 +43,6 @@ private:
         Smear,
         Streak,
         Stretch
-    };
-
-    enum class FloatInput {
-        None,
-        PixelFade,
-        FlightStrength,
-        TrailSpeedFactor,
-        PolygonDetail,
-        SpeedContrast
     };
 
     struct VideoSource {
@@ -117,6 +108,14 @@ private:
         float opacity;
     };
 
+    std::unique_ptr<WebControls> webControls;
+    double nextWebPublish = 0;
+    std::uint64_t webSequence = 0;
+    bool controlsDirty = false;
+    ofJson controlsSnapshot();
+    void processWebCommands();
+    void publishWebState(bool force = false);
+    void selectMode(const std::string &mode);
     InteractiveConfig interactiveConfig;
     std::map<std::string, InteractiveSettings> sessionSettings;
     void applySettings(const InteractiveSettings &settings);
@@ -144,13 +143,10 @@ private:
     std::string layerModeName() const;
     static PixelTreatment pixelTreatmentFromName(const std::string &name);
     static std::string pixelTreatmentName(PixelTreatment treatment);
-    ofRectangle treatmentOptionRect(std::size_t index) const;
-    void drawTreatmentMenu();
     void uploadSelectedInvertedLayer();
     void uploadProcessedPixels(const ofPixels &pixels);
     float targetFrameRate(std::size_t index) const;
     void applyTargetFrameRate();
-    void drawPixelControls();
     std::size_t savedSpecCount(std::size_t videoIndex) const;
     bool loadRenderSpecs(const std::filesystem::path &specsPath);
     bool saveRenderSpecs();
@@ -165,16 +161,11 @@ private:
     ofTexture processedTexture;
     ofTexture originalTexture;
     ofAppBaseWindow *processingWindow = nullptr;
-    ofRectangle saveConfigButton;
-    ofRectangle hysteresisToggle;
     bool hysteresisThresholding = false;
-    ofRectangle polygonGateToggle;
     // Moving regions gate effects as whole filled polygons instead of loose pixels.
     bool polygonGate = false;
-    ofRectangle polygonDetailField;
     // 0 traces coarse merged outlines; 100 traces every pixel step of the mask.
     float polygonDetail = 0.0f;
-    ofRectangle objectCutoutToggle;
     // Inside the gate, keep only pixels the background model sees as the object in the
     // current frame, dropping its shadow and the place it has just left.
     bool objectCutout = false;
@@ -210,13 +201,8 @@ private:
     float pixelFadePercent = 2.5f;
     float pixelFlightStrength = 1.0f;
     float trailSpeedFactor = 0.15f;
-    ofRectangle fadeValueField;
-    ofRectangle flightStrengthField;
-    ofRectangle trailSpeedFactorField;
-    ofRectangle speedContrastField;
     // Coloured particles stretch their colour away from mid grey by 1 + this * speed.
     float speedContrast = 0.0f;
-    ofRectangle bakeToggle;
     // At pixel fade 0, travellers that stop stay drawn where they stopped. Only takes effect
     // at fade 0; raising the fade switches it off.
     bool bakeStoppedPixels = false;
@@ -228,21 +214,13 @@ private:
     // Coloured smear at fade 0 paints here, premultiplied by its coverage, over the live video.
     cv::Mat particlePaint;
     cv::Mat particleCoverage;
-    ofRectangle saveSpecsButton;
-    ofRectangle treatmentField;
-    bool treatmentMenuOpen = false;
-    ofRectangle particlesToggle;
     // Displacement layers push coloured particles instead of pulling through the field.
     bool colouredParticles = false;
-    ofRectangle particlesOnlyToggle;
     // With coloured particles, the displaced video shows the particles on black.
     bool particlesOnly = false;
-    ofRectangle boidsToggle;
     // Travellers flock and swirl; shared tuning is live-reloaded from [boids].
     bool boids = false;
     BoidSettings boidTuning;
-    FloatInput editingFloatInput = FloatInput::None;
-    std::string floatInputText;
     std::string renderStatus;
     bool useSixtyFps = false;
     LayerMode layerMode = LayerMode::MotionMask;
